@@ -1,0 +1,97 @@
+[tool.poetry]
+name = "disc-amc"
+version = "0.1.0"
+description = "DiSC-AMC: Discretized Statistics In-Context Automatic Modulation Classification"
+authors = ["MoeRU <woreom@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.13"
+
+# ── Core ─────────────────────────────────────────────────────────────────
+numpy = "*"
+scipy = "*"
+scikit-learn = "*"
+tqdm = "*"
+Pillow = "*"
+
+# ── PyTorch (CUDA 12.8 nightly) ─────────────────────────────────────────
+torch = { version = "*", source = "pytorch" }
+torchvision = { version = "*", source = "pytorch" }
+torchaudio = { version = "*", source = "pytorch" }
+
+# ── Visualization ────────────────────────────────────────────────────────
+matplotlib = "*"
+plotly = "*"
+seaborn = "*"
+pandas = "*"
+
+[tool.poetry.extras]
+# LLM inference on local GPU (unsloth + vllm + deps)
+llm = ["unsloth", "vllm", "xformers", "triton", "transformers"]
+# Cloud API evaluation providers
+api = ["google-generativeai", "openai", "python-dotenv"]
+# Jupyter notebook support
+notebook = ["ipywidgets", "ipykernel"]
+# Experiment tracking
+tracking = ["wandb"]
+# All optional extras
+all = [
+    "unsloth", "vllm", "xformers", "triton", "transformers",
+    "google-generativeai", "openai", "python-dotenv",
+    "ipywidgets", "ipykernel",
+    "wandb",
+]
+
+[tool.poetry.dependencies.unsloth]
+version = "*"
+optional = true
+
+[tool.poetry.dependencies.vllm]
+version = "*"
+optional = true
+
+[tool.poetry.dependencies.xformers]
+version = "*"
+optional = true
+
+[tool.poetry.dependencies.triton]
+version = "*"
+optional = true
+
+[tool.poetry.dependencies.transformers]
+version = "*"
+optional = true
+
+[tool.poetry.dependencies.google-generativeai]
+version = "*"
+optional = true
+
+[tool.poetry.dependencies.openai]
+version = "*"
+optional = true
+
+[tool.poetry.dependencies.python-dotenv]
+version = "*"
+optional = true
+
+[tool.poetry.dependencies.ipywidgets]
+version = "*"
+optional = true
+
+[tool.poetry.dependencies.ipykernel]
+version = "*"
+optional = true
+
+[tool.poetry.dependencies.wandb]
+version = "*"
+optional = true
+
+[[tool.poetry.source]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/nightly/cu128"
+priority = "explicit"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

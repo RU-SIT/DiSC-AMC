@@ -1,0 +1,92 @@
+"""OpenAI GPT evaluation provider for modulation classification."""
+
+import os
+import traceback
+from tqdm import tqdm
+from dotenv import load_dotenv
+from openai import OpenAI
+
+from utils import (
+    load_data, build_prompts_data, load_existing_results,
+    get_prompts_to_process, save_results_atomic, build_result_entry,
+    sort_results_by_prompt, get_unique_prompts, print_metrics,
+)
+
+load_dotenv()
+
+CLASS_NAMES = ['4ASK', '4PAM', '8ASK', '16PAM', 'CPFSK', 'DQPSK', 'GFSK', 'GMSK', 'OQPSK', 'OOK']
+
+
+def get_openai_response(client: OpenAI, prompt: str, model: str = "o3-mini") -> str:
+    """Get response from OpenAI API with retry logic."""
+    for attempt in range(3):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            print(f"Attempt {attempt + 1} failed: {e}")
+            if attempt == 2:
+                raise
+    return ""
+
+
+def _output_path(prompt_type, model_name, noise_mode, n_bins, top_k):
+    return f"{prompt_type}_{model_name}_{noise_mode}_{n_bins}_{top_k}_openai_responses.json"
+
+
+def main(prompt_type='discret_prompts', model_name="o3-mini",
+         noise_mode='noisySignal', n_bins=10, top_k=5, num_tries=3,
+         prediction_source='dnn'):
+    results = []
+    filepath = _output_path(prompt_type, model_name, noise_mode, n_bins, top_k)
+
+    try:
+        data, _, _ = load_data('../../data/own/unlabeled_10k', noise_mode, n_bins, top_k,
+                               prediction_source=prediction_source)
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+        all_prompts_data = build_prompts_data(data, prompt_type)
+        results, prompts_done, completed = load_existing_results(filepath, num_tries, key_field='prompt')
+        prompts_to_process = get_prompts_to_process(all_prompts_data, completed, prompts_done, key_field='prompt')
+
+        for prompt_data, num_done in tqdm(prompts_to_process):
+            try:
+                prompt, filename = prompt_data['prompt'], prompt_data['filename']
+                for i in range(num_done, num_tries):
+                    raw_response = get_openai_response(client, prompt, model=model_name)
+                    results.append(build_result_entry(filename, i, prompt, raw_response))
+            except Exception as e:
+                print(f"Error processing {prompt_data['filename']}: {e}")
+                print("Stopping to save progress.")
+                break
+
+    except KeyboardInterrupt:
+        print("\nInterrupted. Saving partial results...")
+    except Exception as e:
+        print(traceback.format_exc())
+    finally:
+        save_results_atomic(results, filepath)
+
+
+def read_results(prompt_type, model_name, noise_mode, n_bins, top_k):
+    """Read results from JSON file."""
+    import json
+    filepath = _output_path(prompt_type, model_name, noise_mode, n_bins, top_k)
+    with open(filepath, 'r') as f:
+        return json.load(f)
+
+
+if __name__ == '__main__':
+    PROMPT_TYPE = 'discret_prompts'
+    MODEL_NAME = "o3-mini"
+    NOISE_MODE = 'noisySignal'
+    N_BINS, TOP_K, NUM_TRIES = 10, 5, 3
+
+    main(PROMPT_TYPE, MODEL_NAME, NOISE_MODE, N_BINS, TOP_K, NUM_TRIES)
+    results = read_results(PROMPT_TYPE, MODEL_NAME, NOISE_MODE, N_BINS, TOP_K)
+    sorted_results = sort_results_by_prompt(results)
+    print(f"Unique prompts: {len(get_unique_prompts(results))}")
+    print_metrics(sorted_results, CLASS_NAMES)
