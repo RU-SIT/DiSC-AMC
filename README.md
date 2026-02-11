@@ -9,15 +9,16 @@ Implementation code for the paper [DiSC-AMC: Token- and Parameter-Efficient Disc
 1. [Overview](#overview)
 2. [Installation](#installation)
 3. [Quick Start — `run_pipeline.sh`](#quick-start--run_pipelinesh)
-4. [Project Structure](#project-structure)
-5. [End-to-End Pipeline](#end-to-end-pipeline)
-6. [Module Reference](#module-reference)
+4. [RAG — Retrieval-Augmented Few-Shot Selection](#rag--retrieval-augmented-few-shot-selection)
+5. [Project Structure](#project-structure)
+6. [End-to-End Pipeline](#end-to-end-pipeline)
+7. [Module Reference](#module-reference)
    - [Representation Learning (`src/representation learning/`)](#representation-learning)
    - [Prompt Engineering (`src/prompt/`)](#prompt-engineering)
    - [LLM Evaluation (`src/evaluation/`)](#llm-evaluation)
-7. [Summary](#summary)
-8. [Key Libraries](#key-libraries)
-9. [License](#license)
+8. [Summary](#summary)
+9. [Key Libraries](#key-libraries)
+10. [License](#license)
 
 ---
 
@@ -251,6 +252,153 @@ data/own/unlabeled_10k/
 
 ---
 
+## RAG — Retrieval-Augmented Few-Shot Selection
+
+The pipeline includes an **optional RAG (Retrieval-Augmented Generation)** module
+that replaces the default random/diversity-based few-shot example selection with
+**similarity-based retrieval**.  The implementation is inspired by the general RAG
+paradigm introduced in *"Retrieval-Augmented Generation for Knowledge-Intensive
+NLP Tasks"* (Lewis et al., NeurIPS 2020), adapted here for signal-level
+few-shot prompt construction rather than open-domain text generation.
+
+### Motivation
+
+In the default pipeline, few-shot examples included in each LLM prompt are drawn
+from a static pool using `reduce_example_dict()`, which selects examples with a
+diversity heuristic (no more than a fixed number per class, shuffled randomly).
+While this ensures broad class coverage, it does **not** consider the similarity
+between the test signal and the examples — a prompt asking about a fading OQPSK
+signal at −5 dB may receive examples from completely unrelated conditions.
+
+RAG addresses this by retrieving the **k most similar training signals** for each
+test query, so the LLM sees examples whose statistical fingerprints are closest
+to the signal it needs to classify.
+
+### How It Works in This Repo
+
+The RAG system operates in two phases, both integrated into
+`generated_dataset.py` (Step 6 of the pipeline):
+
+#### Phase 1 — Index Construction (Train Time)
+
+When `--use_rag` is passed during `--mode train`:
+
+1. The pipeline computes scaled statistical feature vectors for every training
+   signal (the same 19-dimensional vectors produced by `StandardScaler` —
+   SNR, skewness, kurtosis, 10 statistical moments, 4 k-statistics, and
+   2 k-statistic variances).
+2. These vectors are inserted into a **FAISS** `IndexFlatL2` index for exact
+   L2 nearest-neighbour search.  For datasets larger than ~100k signals, an
+   `IndexIVFFlat` (approximate search with Voronoi partitioning) is used
+   instead.
+3. The index and associated metadata (signal paths, labels, SNRs) are persisted
+   to disk next to the train `.pkl`:
+
+```
+data/own/unlabeled_10k/
+├── train_centroid_noisySignal_5_5_data.pkl       # existing train data
+├── train_centroid_noisySignal_5_5_rag.index      # FAISS binary index
+└── train_centroid_noisySignal_5_5_rag_meta.pkl   # metadata (paths, labels, SNRs)
+```
+
+#### Phase 2 — Retrieval (Test Time)
+
+When `--use_rag` is passed during `--mode test`:
+
+1. The FAISS index and metadata are loaded from disk.
+2. For **each test signal**, its scaled feature vector is used as a query
+   against the index to retrieve the `k` nearest training signals
+   (controlled by `--rag_k`, default 10).
+3. The retrieved signals are loaded and formatted into the `example_dict`
+   structure expected by `generate_prompt()`, replacing the static pool.
+4. Self-retrieval is prevented — if the test signal also exists in the
+   training set, it is excluded from its own results.
+
+```
+Test signal (feature vector)
+        │
+        ▼
+┌──────────────────────────────┐
+│   FAISS Index (L2 search)    │  Trained on N training feature vectors
+│   → k nearest neighbours     │
+└──────────┬───────────────────┘
+           │
+           ▼
+  Retrieved signals + labels + SNRs
+           │
+           ▼
+  example_dict  →  generate_prompt()  →  LLM prompt
+```
+
+### Usage
+
+**Install FAISS** (required only when RAG is enabled):
+
+```bash
+pip install faiss-cpu    # CPU-only
+# or
+pip install faiss-gpu    # CUDA-accelerated search
+```
+
+**Via `run_pipeline.sh`:**
+
+```bash
+# In run_pipeline.sh, set:
+USE_RAG=true
+RAG_K=10      # neighbours per test signal
+```
+
+**Via CLI directly:**
+
+```bash
+cd src/prompt/
+
+# 1. Build train data + RAG index
+python generated_dataset.py \
+  --mode train \
+  --dataset_folder unlabeled_10k \
+  --noise_mode noisySignal \
+  --n_bins 5 --top_k 5 \
+  --prediction_source centroid \
+  --use_rag --rag_k 10
+
+# 2. Build test data with RAG retrieval
+python generated_dataset.py \
+  --mode test \
+  --dataset_folder unlabeled_10k \
+  --noise_mode noisySignal \
+  --n_bins 5 --top_k 5 \
+  --prediction_source centroid \
+  --use_rag --rag_k 10
+```
+
+**OOD + RAG** — works with out-of-distribution mode as well:
+
+```bash
+python generated_dataset.py \
+  --mode test \
+  --dataset_folder "-11_-15dB" \
+  --train_dataset_folder unlabeled_10k \
+  --noise_mode noisySignal \
+  --n_bins 5 --top_k 5 \
+  --prediction_source centroid \
+  --use_rag --rag_k 10
+```
+
+### Backward Compatibility
+
+RAG is **fully optional**.  When `--use_rag` is not passed (or `USE_RAG=false`
+in the shell script), the pipeline behaves exactly as before — FAISS is never
+imported, no index is built, and few-shot examples are selected using the
+original `reduce_example_dict()` diversity heuristic.
+
+| Flag | Example selection method |
+|------|-------------------------|
+| *(default)* | Random diversity pool via `reduce_example_dict()` |
+| `--use_rag` | FAISS L2 nearest-neighbour retrieval via `rag.py` |
+
+---
+
 ## Project Structure
 
 ```
@@ -274,6 +422,7 @@ DiSC-AMC/
 │   │   ├── data_processing.py     # Feature extraction, scaling, discretisation, prompt gen
 │   │   ├── embedding_features.py  # Encoder embeddings → PCA → feature dicts for prompts
 │   │   ├── generated_dataset.py   # Full dataset builder (train/test .pkl files)
+│   │   ├── rag.py                 # Optional FAISS-based RAG for few-shot example retrieval
 │   │   ├── templates.py           # Prompt templates, modulation families, class names
 │   │   ├── visualization.py       # t-SNE, confusion matrix, Plotly helpers
 │   │   ├── baseline.py            # Traditional ML baselines (SVM, RF, KNN, etc.)
@@ -805,6 +954,8 @@ python generated_dataset.py --mode test --dataset_folder unlabeled_10k \
 | `--top_k` | `5` | Top-k value matching predictions file |
 | `--prediction_source` | `centroid` | `dnn`, `centroid`, or `rf` — controls which JSON to load (see [`naming.py`](src/naming.py)) |
 | `--data_root` | `../../data/own` | Root data directory |
+| `--use_rag` | `False` | Enable FAISS-based RAG for few-shot example retrieval |
+| `--rag_k` | `10` | Number of nearest neighbours to retrieve when RAG is enabled |
 
 **Output `.pkl` structure:**
 
@@ -823,6 +974,22 @@ python generated_dataset.py --mode test --dataset_folder unlabeled_10k \
 | `scaler` | `StandardScaler` | Fitted scaler (reuse for test set) |
 | `discretizers` | `dict[int, KBinsDiscretizer]` | Fitted discretizers (reuse for test set) |
 | `k-top` | `list or None` | Top-k classes per signal from centroid predictions |
+
+#### `rag.py`
+
+Optional FAISS-based Retrieval-Augmented Generation module for similarity-based
+few-shot example selection. Only imported when `--use_rag` is enabled.
+
+| Symbol | Type | Description |
+|--------|------|-------------|
+| `RAGRetriever` | `dataclass` | Wraps a FAISS index + metadata (signal paths, labels, SNRs, feature vectors) |
+| `build_rag_index(signal_paths, labels, snrs, feature_vectors, train_pkl_path)` | function | Builds a FAISS `IndexFlatL2` (or `IndexIVFFlat` for large datasets) and persists to disk as `*_rag.index` + `*_rag_meta.pkl` |
+| `load_rag_index(train_pkl_path)` | function | Loads a previously built index and metadata from disk |
+| `retrieve_examples(retriever, query_vector, rag_k)` | function | Returns the `k` nearest training signals as `{label: [(path, snr), ...]}` |
+| `rag_example_dict_from_paths(retrieved)` | function | Converts retrieved paths to loaded signal arrays matching the `example_dict` format |
+| `retrieve_example_dict_for_signal(retriever, query_feature_vector, rag_k)` | function | End-to-end helper: retrieve → load → return `example_dict` for `generate_prompt()` |
+
+**Dependencies:** `faiss-cpu` or `faiss-gpu` (lazy-imported, not required when RAG is disabled).
 
 #### `visualization.py`
 
@@ -949,6 +1116,7 @@ Here is where each piece now lives:
 - **[vLLM](https://github.com/vllm-project/vllm)** — High-performance LLM serving
 - **PyTorch / Torchvision** — Deep learning framework
 - **scikit-learn** — PCA, KBinsDiscretizer, StandardScaler, ML baselines
+- **[FAISS](https://github.com/facebookresearch/faiss)** — Vector similarity search for RAG-based example retrieval (optional)
 - **Plotly** — Interactive visualizations (t-SNE, confusion matrices)
 
 ## License
