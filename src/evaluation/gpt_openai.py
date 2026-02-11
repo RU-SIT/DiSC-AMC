@@ -1,10 +1,14 @@
 """OpenAI GPT evaluation provider for modulation classification."""
 
 import os
+import sys
 import traceback
 from tqdm import tqdm
 from dotenv import load_dotenv
 from openai import OpenAI
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from naming import ExperimentConfig, eval_result_name
 
 from utils import (
     load_data, build_prompts_data, load_existing_results,
@@ -33,19 +37,34 @@ def get_openai_response(client: OpenAI, prompt: str, model: str = "o3-mini") -> 
     return ""
 
 
-def _output_path(prompt_type, model_name, noise_mode, n_bins, top_k):
-    return f"{prompt_type}_{model_name}_{noise_mode}_{n_bins}_{top_k}_openai_responses.json"
+def _output_path(cfg: ExperimentConfig, prompt_type: str, model_name: str) -> str:
+    return eval_result_name(cfg, prompt_type, model_name, "openai")
 
 
-def main(prompt_type='discret_prompts', model_name="o3-mini",
-         noise_mode='noisySignal', n_bins=10, top_k=5, num_tries=3,
-         prediction_source='dnn'):
+def main(dataset_folder='unlabeled_10k', prompt_type='discret_prompts',
+         model_name="o3-mini", noise_mode='noisySignal',
+         n_bins=10, top_k=5, num_tries=3, prediction_source='dnn',
+         feature_type='stats', n_components=0,
+         ood_train_folder='', use_rag=False, rag_k=0):
+    cfg = ExperimentConfig(
+        dataset_folder=dataset_folder,
+        prediction_source=prediction_source,
+        noise_mode=noise_mode,
+        n_bins=n_bins,
+        top_k=top_k,
+        feature_type=feature_type,
+        n_components=n_components,
+        ood_train_folder=ood_train_folder,
+        use_rag=use_rag,
+        rag_k=rag_k,
+    )
     results = []
-    filepath = _output_path(prompt_type, model_name, noise_mode, n_bins, top_k)
+    filepath = _output_path(cfg, prompt_type, model_name)
 
     try:
-        data, _, _ = load_data('../../data/own/unlabeled_10k', noise_mode, n_bins, top_k,
-                               prediction_source=prediction_source)
+        data, _, _ = load_data(f'../../data/own/{dataset_folder}', noise_mode, n_bins, top_k,
+                               prediction_source=prediction_source,
+                               feature_tag=f'emb{n_components}' if feature_type == 'embeddings' else '')
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
         all_prompts_data = build_prompts_data(data, prompt_type)
@@ -71,22 +90,39 @@ def main(prompt_type='discret_prompts', model_name="o3-mini",
         save_results_atomic(results, filepath)
 
 
-def read_results(prompt_type, model_name, noise_mode, n_bins, top_k):
+def read_results(dataset_folder='unlabeled_10k', prompt_type='discret_prompts',
+                 model_name='o3-mini', noise_mode='noisySignal',
+                 n_bins=5, top_k=5, prediction_source='dnn',
+                 feature_type='stats', n_components=0,
+                 ood_train_folder='', use_rag=False, rag_k=0):
     """Read results from JSON file."""
     import json
-    filepath = _output_path(prompt_type, model_name, noise_mode, n_bins, top_k)
+    cfg = ExperimentConfig(
+        dataset_folder=dataset_folder,
+        prediction_source=prediction_source,
+        noise_mode=noise_mode,
+        n_bins=n_bins,
+        top_k=top_k,
+        feature_type=feature_type,
+        n_components=n_components,
+        ood_train_folder=ood_train_folder,
+        use_rag=use_rag,
+        rag_k=rag_k,
+    )
+    filepath = _output_path(cfg, prompt_type, model_name)
     with open(filepath, 'r') as f:
         return json.load(f)
 
 
 if __name__ == '__main__':
+    DATASET_FOLDER = 'unlabeled_10k'
     PROMPT_TYPE = 'discret_prompts'
     MODEL_NAME = "o3-mini"
     NOISE_MODE = 'noisySignal'
     N_BINS, TOP_K, NUM_TRIES = 10, 5, 3
 
-    main(PROMPT_TYPE, MODEL_NAME, NOISE_MODE, N_BINS, TOP_K, NUM_TRIES)
-    results = read_results(PROMPT_TYPE, MODEL_NAME, NOISE_MODE, N_BINS, TOP_K)
+    main(DATASET_FOLDER, PROMPT_TYPE, MODEL_NAME, NOISE_MODE, N_BINS, TOP_K, NUM_TRIES)
+    results = read_results(DATASET_FOLDER, PROMPT_TYPE, MODEL_NAME, NOISE_MODE, N_BINS, TOP_K)
     sorted_results = sort_results_by_prompt(results)
     print(f"Unique prompts: {len(get_unique_prompts(results))}")
     print_metrics(sorted_results, CLASS_NAMES)

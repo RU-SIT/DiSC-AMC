@@ -1,6 +1,7 @@
 """Unsloth local model evaluation provider for modulation classification."""
 
 import os
+import sys
 import traceback
 from tqdm import tqdm
 from typing import Dict, List
@@ -8,6 +9,9 @@ from typing import Dict, List
 import torch
 from unsloth import FastLanguageModel, FastVisionModel
 from unsloth.chat_templates import get_chat_template
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from naming import ExperimentConfig, eval_result_name
 
 from utils import (
     extract_tag, load_data, build_prompts_data, load_existing_results,
@@ -72,20 +76,35 @@ def _get_response_tags(chat_template: str):
     return "<think>", "</think>"
 
 
-def _output_path(dataset_folder, prompt_type, model_name, noise_mode, n_bins, top_k):
+def _output_path(cfg: ExperimentConfig, prompt_type: str, model_name: str) -> str:
     clean_name = model_name.replace('unsloth/', '')
-    return f"{dataset_folder}_{prompt_type}_{clean_name}_{noise_mode}_{n_bins}_{top_k}_custom_responses.json"
+    return eval_result_name(cfg, prompt_type, clean_name, "custom")
 
 
 def main(dataset_folder, prompt_type='discret_prompts',
          model_name="gemini-2.5-flash", noise_mode='noisySignal',
-         n_bins=10, top_k=5, num_tries=3, prediction_source='dnn'):
+         n_bins=10, top_k=5, num_tries=3, prediction_source='dnn',
+         feature_type='stats', n_components=0,
+         ood_train_folder='', use_rag=False, rag_k=0):
+    cfg = ExperimentConfig(
+        dataset_folder=dataset_folder,
+        prediction_source=prediction_source,
+        noise_mode=noise_mode,
+        n_bins=n_bins,
+        top_k=top_k,
+        feature_type=feature_type,
+        n_components=n_components,
+        ood_train_folder=ood_train_folder,
+        use_rag=use_rag,
+        rag_k=rag_k,
+    )
     results = []
-    filepath = _output_path(dataset_folder, prompt_type, model_name, noise_mode, n_bins, top_k)
+    filepath = _output_path(cfg, prompt_type, model_name)
 
     try:
         data, _, _ = load_data(f'../../data/own/{dataset_folder}', noise_mode, n_bins, top_k,
-                               prediction_source=prediction_source)
+                               prediction_source=prediction_source,
+                               feature_tag=cfg.build_tag().split('_', 1)[-1] if cfg.feature_type == 'embeddings' else '')
         model, tokenizer = load_model_and_tokenizer(model_name)
 
         all_prompts_data = build_prompts_data(data, prompt_type)
@@ -121,10 +140,24 @@ def main(dataset_folder, prompt_type='discret_prompts',
         save_results_atomic(results, filepath)
 
 
-def read_results(dataset_folder, prompt_type, model_name, noise_mode, n_bins, top_k):
+def read_results(dataset_folder, prompt_type, model_name, noise_mode, n_bins, top_k,
+                 prediction_source='dnn', feature_type='stats', n_components=0,
+                 ood_train_folder='', use_rag=False, rag_k=0):
     """Read results from JSON file."""
     import json
-    filepath = _output_path(dataset_folder, prompt_type, model_name, noise_mode, n_bins, top_k)
+    cfg = ExperimentConfig(
+        dataset_folder=dataset_folder,
+        prediction_source=prediction_source,
+        noise_mode=noise_mode,
+        n_bins=n_bins,
+        top_k=top_k,
+        feature_type=feature_type,
+        n_components=n_components,
+        ood_train_folder=ood_train_folder,
+        use_rag=use_rag,
+        rag_k=rag_k,
+    )
+    filepath = _output_path(cfg, prompt_type, model_name)
     with open(filepath, 'r') as f:
         return json.load(f)
 

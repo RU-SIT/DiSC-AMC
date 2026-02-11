@@ -212,7 +212,9 @@ def get_processed_data(
     decimal_precision: int = 3, 
     add_context: bool = True,
     ktop_info: Optional[Dict[str, Any]] = None,
-    n_bins: int = 5
+    n_bins: int = 5,
+    rag_retriever=None,
+    rag_k: int = 10,
 ) -> Dict[str, Any]:
     """
     Processes signal data from file paths to generate features, prompts, and metadata.
@@ -308,13 +310,34 @@ def get_processed_data(
         for k, v in example_paths.items()
     }
 
-    # print(all_example_dict)
+    # ── Helper: get example_dict per signal (RAG or legacy) ──────────────
+    def _get_example_dict(i: int) -> Dict[str, Any]:
+        """Return few-shot example_dict for signal *i*.
+
+        When a RAG retriever is available, retrieve the nearest training
+        signals.  Otherwise fall back to the original diversity-based
+        random selection from the hardcoded pool.
+        """
+        if rag_retriever is not None:
+            from rag import retrieve_example_dict_for_signal
+            return retrieve_example_dict_for_signal(
+                rag_retriever,
+                signal_features[i],
+                rag_k=rag_k,
+                signal_path=signal_paths[i],
+            )
+        return reduce_example_dict(
+            all_example_dict,
+            get_dataset_label(signal_paths[i]),
+            max_examples=10,
+        )
+
     # Generate prompts using the scaled continuous features
     # These prompts might include few-shot examples if add_context is True
     old_context_prompts: List[str] = [
         generate_prompt(
             sig_info, question_template, question_template_format, instruction_template, instruction_template_format, feature_names, 
-            processed=True, add_context=add_context, example_dict=reduce_example_dict(all_example_dict, get_dataset_label(signal_paths[i]), max_examples=10),
+            processed=True, add_context=add_context, example_dict=_get_example_dict(i),
             decimal_precision=decimal_precision, options=options, 
             discretizers=None, scaler=scaler, discretized=False
         ) for i, sig_info in tqdm(enumerate(signal_stats), desc="Generating continuous prompts")
@@ -325,7 +348,7 @@ def get_processed_data(
     old_discret_context_prompts: List[str] = [
         generate_prompt(
             sig_info, question_template, question_template_format, instruction_template, instruction_template_format, feature_names, 
-            processed=True, add_context=add_context, example_dict=reduce_example_dict(all_example_dict, get_dataset_label(signal_paths[i]), max_examples=10), 
+            processed=True, add_context=add_context, example_dict=_get_example_dict(i), 
             decimal_precision=decimal_precision, options=options, 
             discretizers=discretizers, scaler=scaler, discretized=True
         ) for i, sig_info in tqdm(enumerate(signal_discretized_feature), desc="Generating discrete prompts")
@@ -337,24 +360,38 @@ def get_processed_data(
     if ktop_info is not None:
         question_template = INPUT_ENGINEERED_TEXT
         instruction_template = PROMPT_ENGINEERED_TEMPLATE
+
+        # ── Helper: get k-top example_dict (RAG or legacy) ──────────
+        def _get_ktop_example_dict(i: int) -> Dict[str, Any]:
+            if rag_retriever is not None:
+                from rag import retrieve_example_dict_for_signal
+                full = retrieve_example_dict_for_signal(
+                    rag_retriever,
+                    signal_features[i],
+                    rag_k=rag_k,
+                    signal_path=signal_paths[i],
+                )
+                return ktop_example(ktop_info[i], example_dict=full)
+            return ktop_example(ktop_info[i], example_dict=all_example_dict)
+
         # Generate prompts using the scaled continuous features
         # These prompts might include few-shot examples if add_context is True
         context_prompts: List[str] = [
             generate_prompt(
                 sig_info, question_template, [ktop_info[i]], instruction_template, instruction_template_format, feature_names, 
-                processed=True, add_context=add_context, example_dict=ktop_example(ktop_info[i], example_dict=all_example_dict),
+                processed=True, add_context=add_context, example_dict=_get_ktop_example_dict(i),
                 decimal_precision=decimal_precision, options=ktop_info[i], 
                 discretizers=None, scaler=scaler, discretized=False
             ) + END_ENGINEERED_TEXT
             for i, sig_info in tqdm(enumerate(signal_stats), desc="Generating continuous prompts")
         ]
-        
+
         # Generate prompts using the discretized features (represented by letters)
         # These prompts might also include few-shot examples if add_context is True
         discret_context_prompts: List[str] = [
             generate_prompt(
                 sig_info, question_template, [ktop_info[i]], instruction_template, instruction_template_format, feature_names, 
-                processed=True, add_context=add_context, example_dict=ktop_example(ktop_info[i], example_dict=all_example_dict),
+                processed=True, add_context=add_context, example_dict=_get_ktop_example_dict(i),
                 decimal_precision=decimal_precision, options=ktop_info[i], 
                 discretizers=discretizers, scaler=scaler, discretized=True
             ) + END_ENGINEERED_TEXT
@@ -639,12 +676,18 @@ def build_train(
     backbone: str = "dino",
     n_components: int = 10,
     batch_size: int = 32,
+    use_rag: bool = False,
+    rag_k: int = 10,
 ) -> None:
     """Build and save the TRAIN dataset ``.pkl``.
 
     Fits a new ``StandardScaler`` and ``KBinsDiscretizer`` on the training
     signals.  Only basic (old) prompts are generated because top-k
     predictions are not available for the training set.
+
+    When ``use_rag=True``, a FAISS vector index is built over the scaled
+    training features and saved alongside the ``.pkl``.  This index is
+    loaded at test time for similarity-based example retrieval.
 
     When ``feature_type="embeddings"``, the encoder is loaded and PCA is
     fit on the training embeddings.  The resulting ``.pkl`` includes a
@@ -707,6 +750,25 @@ def build_train(
     save_processed_data(train_data, out_path)
     print(f"Train data saved → {out_path}")
 
+    # ── Optionally build RAG index ───────────────────────────────────────
+    if use_rag:
+        from rag import build_rag_index
+        from data_processing import dict_to_np
+
+        # Build feature matrix from scaled stats
+        feat_names = train_data["feature_names"]
+        feat_matrix = np.array([
+            dict_to_np(s, feat_names) for s in train_data["stats"]
+        ], dtype=np.float32)
+
+        build_rag_index(
+            signal_paths=[os.path.abspath(p) for p in train_signal_paths],
+            labels=train_labels,
+            snrs=train_snrs,
+            feature_vectors=feat_matrix,
+            train_pkl_path=out_path,
+        )
+
 
 def build_test(
     data_root: str,
@@ -722,12 +784,18 @@ def build_test(
     n_components: int = 10,
     batch_size: int = 32,
     train_dataset_folder: Optional[str] = None,
+    use_rag: bool = False,
+    rag_k: int = 10,
 ) -> None:
     """Build and save the TEST dataset ``.pkl``.
 
     Reuses the scaler and discretizers from the previously saved train
     ``.pkl``.  Loads the top-k predictions JSON to generate the engineered
     prompts with narrowed classification options.
+
+    When ``use_rag=True``, the FAISS index built during training is loaded
+    and used for similarity-based few-shot example retrieval instead of
+    the hardcoded example pool.
 
     When ``train_dataset_folder`` is set, the train ``.pkl`` and few-shot
     examples are loaded from that folder instead of ``dataset_folder``.
@@ -796,6 +864,12 @@ def build_test(
         print("  → Generating old-style prompts only (all classes as options)")
 
     # ── Process ──────────────────────────────────────────────────────────
+    # Optionally load RAG retriever for similarity-based example selection
+    rag_retriever = None
+    if use_rag:
+        from rag import load_rag_index
+        rag_retriever = load_rag_index(train_pkl)
+
     if feature_type == "embeddings":
         from embedding_features import load_encoder_for_embeddings
 
@@ -837,6 +911,8 @@ def build_test(
             add_context=True,
             ktop_info=ktop_info,
             n_bins=n_bins,
+            rag_retriever=rag_retriever,
+            rag_k=rag_k,
         )
 
     out_path = os.path.join(
@@ -940,6 +1016,18 @@ if __name__ == "__main__":
         help="Batch size for embedding extraction (default: 32).  Only "
              "used when --feature_type=embeddings.",
     )
+    parser.add_argument(
+        "--use_rag", action="store_true", default=False,
+        help="Enable RAG (Retrieval-Augmented Generation) for few-shot "
+             "example selection.  When set, a FAISS index is built during "
+             "training and used during testing to retrieve the most similar "
+             "training signals as context.  Requires faiss-cpu or faiss-gpu.",
+    )
+    parser.add_argument(
+        "--rag_k", type=int, default=10,
+        help="Number of nearest neighbours to retrieve per test signal "
+             "when --use_rag is enabled (default: 10).",
+    )
 
     args = parser.parse_args()
 
@@ -956,6 +1044,8 @@ if __name__ == "__main__":
             backbone=args.backbone,
             n_components=args.n_components,
             batch_size=args.batch_size,
+            use_rag=args.use_rag,
+            rag_k=args.rag_k,
         )
     elif args.mode == "test":
         build_test(
@@ -971,4 +1061,6 @@ if __name__ == "__main__":
             n_components=args.n_components,
             batch_size=args.batch_size,
             train_dataset_folder=args.train_dataset_folder,
+            use_rag=args.use_rag,
+            rag_k=args.rag_k,
         )
