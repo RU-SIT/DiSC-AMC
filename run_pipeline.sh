@@ -56,6 +56,9 @@ NOISE_MODE="noisySignal"     # noisySignal | noiselessSignal
 N_BINS=5
 
 # ─── Feature type (Step 6) ──────────────────────────────────────────────
+# RAG (Retrieval-Augmented Generation) — optional
+USE_RAG=false                # true → build/use FAISS index for example selection
+RAG_K=10                     # number of nearest neighbours per test signal
 FEATURE_TYPE="stats"         # stats | embeddings
 # If FEATURE_TYPE="embeddings", set these:
 N_COMPONENTS=10              # PCA components to keep
@@ -65,8 +68,24 @@ ENCODER_WEIGHTS="${EXP_DIR}/dino_classifier.pth"
 RAW_JSON="top${TOP_K}_${PREDICTION_SOURCE}_predictions.json"
 CONVERTED_JSON="ntop${TOP_K}_${PREDICTION_SOURCE}_predictions.json"
 
+# Derived OOD / embedding vars for evaluation steps
+OOD_TRAIN_FOLDER=""
+if [[ -n "$TRAIN_DATASET_FOLDER" && "$TRAIN_DATASET_FOLDER" != "$DATASET_FOLDER" ]]; then
+    OOD_TRAIN_FOLDER="$TRAIN_DATASET_FOLDER"
+fi
+N_COMPONENTS_EVAL=0
+if [[ "$FEATURE_TYPE" == "embeddings" ]]; then
+    N_COMPONENTS_EVAL=$N_COMPONENTS
+fi
+USE_RAG_PY="False"
+RAG_K_EVAL=0
+if [[ "$USE_RAG" == "true" ]]; then
+    USE_RAG_PY="True"
+    RAG_K_EVAL=$RAG_K
+fi
+
 # ─── LLM evaluation (Step 7) ────────────────────────────────────────────
-PROMPT_TYPE="old_discret_prompts"   # discret_prompts | old_discret_prompts | prompts | old_prompts
+PROMPT_TYPE="discret_prompts"   # discret_prompts | old_discret_prompts | prompts | old_prompts
 NUM_TRIES=1
 
 # Provider-specific
@@ -185,6 +204,12 @@ step6_generate_datasets() {
         emb_flags+=" --batch_size $BATCH_SIZE"
     fi
 
+      # RAG flags (optional)
+    local rag_flags=""
+    if [[ "$USE_RAG" == "true" ]]; then
+        rag_flags="--use_rag --rag_k $RAG_K"
+    fi
+
     # OOD flag: when TRAIN_DATASET_FOLDER is set and differs from
     # DATASET_FOLDER, skip the train step (reuse existing train .pkl)
     # and pass --train_dataset_folder to the test step.
@@ -206,7 +231,8 @@ step6_generate_datasets() {
             --top_k "$TOP_K" \
             --prediction_source "$PREDICTION_SOURCE" \
             --data_root "$DATA_ROOT" \
-            $emb_flags
+            $emb_flags \
+            $rag_flags
     fi
 
     echo "  6b. Building TEST data (feature_type=${FEATURE_TYPE}) …"
@@ -219,7 +245,8 @@ step6_generate_datasets() {
         --prediction_source "$PREDICTION_SOURCE" \
         --data_root "$DATA_ROOT" \
         $ood_flag \
-        $emb_flags
+        $emb_flags \
+        $rag_flags
 }
 
 step7_query_gemini() {
@@ -230,6 +257,7 @@ step7_query_gemini() {
     python -c "
 from gemini_googleai import main
 main(
+    dataset_folder='${DATASET_FOLDER}',
     prompt_type='${PROMPT_TYPE}',
     model_name='${GEMINI_MODEL}',
     noise_mode='${NOISE_MODE}',
@@ -237,6 +265,11 @@ main(
     top_k=${TOP_K},
     num_tries=${NUM_TRIES},
     prediction_source='${PREDICTION_SOURCE}',
+    feature_type='${FEATURE_TYPE}',
+    n_components=${N_COMPONENTS_EVAL},
+    ood_train_folder='${OOD_TRAIN_FOLDER}',
+    use_rag=${USE_RAG_PY},
+    rag_k=${RAG_K_EVAL},
 )
 "
 }
@@ -249,6 +282,7 @@ step7_query_openai() {
     python -c "
 from gpt_openai import main
 main(
+    dataset_folder='${DATASET_FOLDER}',
     prompt_type='${PROMPT_TYPE}',
     model_name='${OPENAI_MODEL}',
     noise_mode='${NOISE_MODE}',
@@ -256,6 +290,11 @@ main(
     top_k=${TOP_K},
     num_tries=${NUM_TRIES},
     prediction_source='${PREDICTION_SOURCE}',
+    feature_type='${FEATURE_TYPE}',
+    n_components=${N_COMPONENTS_EVAL},
+    ood_train_folder='${OOD_TRAIN_FOLDER}',
+    use_rag=${USE_RAG_PY},
+    rag_k=${RAG_K_EVAL},
 )
 "
 }
@@ -276,6 +315,11 @@ main(
     top_k=${TOP_K},
     num_tries=${NUM_TRIES},
     prediction_source='${PREDICTION_SOURCE}',
+    feature_type='${FEATURE_TYPE}',
+    n_components=${N_COMPONENTS_EVAL},
+    ood_train_folder='${OOD_TRAIN_FOLDER}',
+    use_rag=${USE_RAG_PY},
+    rag_k=${RAG_K_EVAL},
 )
 "
 }
@@ -289,7 +333,20 @@ step8_metrics_gemini() {
 from gemini_googleai import read_results, CLASS_NAMES
 from utils import sort_results_by_prompt, get_unique_prompts, print_metrics
 
-results = read_results('${PROMPT_TYPE}', '${GEMINI_MODEL}', '${NOISE_MODE}', ${N_BINS}, ${TOP_K})
+results = read_results(
+    dataset_folder='${DATASET_FOLDER}',
+    prompt_type='${PROMPT_TYPE}',
+    model_name='${GEMINI_MODEL}',
+    noise_mode='${NOISE_MODE}',
+    n_bins=${N_BINS},
+    top_k=${TOP_K},
+    prediction_source='${PREDICTION_SOURCE}',
+    feature_type='${FEATURE_TYPE}',
+    n_components=${N_COMPONENTS_EVAL},
+    ood_train_folder='${OOD_TRAIN_FOLDER}',
+    use_rag=${USE_RAG_PY},
+    rag_k=${RAG_K_EVAL},
+)
 sorted_results = sort_results_by_prompt(results)
 print(f'Unique prompts: {len(get_unique_prompts(results))}')
 print_metrics(sorted_results, CLASS_NAMES)
@@ -305,7 +362,20 @@ step8_metrics_openai() {
 from gpt_openai import read_results, CLASS_NAMES
 from utils import sort_results_by_prompt, get_unique_prompts, print_metrics
 
-results = read_results('${PROMPT_TYPE}', '${OPENAI_MODEL}', '${NOISE_MODE}', ${N_BINS}, ${TOP_K})
+results = read_results(
+    dataset_folder='${DATASET_FOLDER}',
+    prompt_type='${PROMPT_TYPE}',
+    model_name='${OPENAI_MODEL}',
+    noise_mode='${NOISE_MODE}',
+    n_bins=${N_BINS},
+    top_k=${TOP_K},
+    prediction_source='${PREDICTION_SOURCE}',
+    feature_type='${FEATURE_TYPE}',
+    n_components=${N_COMPONENTS_EVAL},
+    ood_train_folder='${OOD_TRAIN_FOLDER}',
+    use_rag=${USE_RAG_PY},
+    rag_k=${RAG_K_EVAL},
+)
 sorted_results = sort_results_by_prompt(results)
 print(f'Unique prompts: {len(get_unique_prompts(results))}')
 print_metrics(sorted_results, CLASS_NAMES)
@@ -321,7 +391,20 @@ step8_metrics_unsloth() {
 from unsloth_eval import read_results, CLASS_NAMES
 from utils import sort_results_by_prompt, get_unique_prompts, print_metrics
 
-results = read_results('${DATASET_FOLDER}', '${PROMPT_TYPE}', '${UNSLOTH_MODEL}', '${NOISE_MODE}', ${N_BINS}, ${TOP_K})
+results = read_results(
+    dataset_folder='${DATASET_FOLDER}',
+    prompt_type='${PROMPT_TYPE}',
+    model_name='${UNSLOTH_MODEL}',
+    noise_mode='${NOISE_MODE}',
+    n_bins=${N_BINS},
+    top_k=${TOP_K},
+    prediction_source='${PREDICTION_SOURCE}',
+    feature_type='${FEATURE_TYPE}',
+    n_components=${N_COMPONENTS_EVAL},
+    ood_train_folder='${OOD_TRAIN_FOLDER}',
+    use_rag=${USE_RAG_PY},
+    rag_k=${RAG_K_EVAL},
+)
 sorted_results = sort_results_by_prompt(results)
 print(f'Unique prompts: {len(get_unique_prompts(results))}')
 print_metrics(sorted_results, CLASS_NAMES)
@@ -334,10 +417,10 @@ print_metrics(sorted_results, CLASS_NAMES)
 
 # step2_train_classifier
 # step3_compute_centroids
-step4a_evaluate_test
-step4b_predict_topk
-step5_convert_keys
-step6_generate_datasets
+# step4a_evaluate_test
+# step4b_predict_topk
+# step5_convert_keys
+# step6_generate_datasets
 
 # Uncomment the provider(s) you want to run:
 # step7_query_gemini
@@ -347,7 +430,7 @@ step7_query_unsloth
 # Uncomment to compute metrics from saved results:
 # step8_metrics_gemini
 # step8_metrics_openai
-# step8_metrics_unsloth
+step8_metrics_unsloth
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
