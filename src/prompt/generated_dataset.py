@@ -90,7 +90,7 @@ from src.naming import (
     train_pkl_name,
 )
 
-from .data_processing import (
+from src.prompt.data_processing import (
     create_options,
     dict_to_np,
     discretize_features,
@@ -107,7 +107,7 @@ from .data_processing import (
     save_processed_data,
     split_real_imaginary,
 )
-from templates import (
+from src.prompt.templates import (
     CASCADE_PROMPT,
     END_ENGINEERED_TEXT,
     INPUT_ENGINEERED_TEXT,
@@ -317,7 +317,7 @@ def get_processed_data(
         random selection from the hardcoded pool.
         """
         if rag_retriever is not None:
-            from .rag import retrieve_example_dict_for_signal
+            from src.prompt.rag import retrieve_example_dict_for_signal
             return retrieve_example_dict_for_signal(
                 rag_retriever,
                 signal_features[i],
@@ -362,7 +362,7 @@ def get_processed_data(
         # ── Helper: get k-top example_dict (RAG or legacy) ──────────
         def _get_ktop_example_dict(i: int) -> Dict[str, Any]:
             if rag_retriever is not None:
-                from rag import retrieve_example_dict_for_signal
+                from src.prompt.rag import retrieve_example_dict_for_signal
                 full = retrieve_example_dict_for_signal(
                     rag_retriever,
                     signal_features[i],
@@ -527,7 +527,7 @@ def get_embedding_processed_data(
         Same structure as :func:`get_processed_data`, plus ``'pca'`` and
         ``'feature_type'`` keys.
     """
-    from .embedding_features import (
+    from src.prompt.embedding_features import (
         compute_embedding_features,
         extract_embeddings_from_paths,
         prepare_example_embedding_dicts,
@@ -704,7 +704,7 @@ def build_train(
     print(f"Train signals: {len(train_signal_paths)} | Classes: {len(set(train_labels))}")
 
     if feature_type == "embeddings":
-        from .embedding_features import load_encoder_for_embeddings
+        from src.prompt.embedding_features import load_encoder_for_embeddings
 
         if encoder_weights is None:
             raise ValueError("--encoder_weights is required for feature_type=embeddings")
@@ -750,8 +750,8 @@ def build_train(
 
     # ── Optionally build RAG index ───────────────────────────────────────
     if use_rag:
-        from .rag import build_rag_index
-        from .data_processing import dict_to_np
+        from src.prompt.rag import build_rag_index
+        from src.prompt.data_processing import dict_to_np
 
         # Build feature matrix from scaled stats
         feat_names = train_data["feature_names"]
@@ -865,11 +865,11 @@ def build_test(
     # Optionally load RAG retriever for similarity-based example selection
     rag_retriever = None
     if use_rag:
-        from .rag import load_rag_index
+        from src.prompt.rag import load_rag_index
         rag_retriever = load_rag_index(train_pkl)
 
     if feature_type == "embeddings":
-        from embedding_features import load_encoder_for_embeddings
+        from src.prompt.embedding_features import load_encoder_for_embeddings
 
         if encoder_weights is None:
             raise ValueError("--encoder_weights is required for feature_type=embeddings")

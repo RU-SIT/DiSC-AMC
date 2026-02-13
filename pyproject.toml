@@ -1,9 +1,10 @@
 [tool.poetry]
-name = "disc-amc"
+name = "disc_amc"
 version = "0.1.0"
 description = "DiSC-AMC: Discretized Statistics In-Context Automatic Modulation Classification"
 authors = ["MoeRU <woreom@gmail.com>"]
 readme = "README.md"
+packages = [{include = "src"}]
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.13"
