@@ -56,7 +56,7 @@ from sklearn.preprocessing import KBinsDiscretizer, StandardScaler
 from torchvision import transforms
 from tqdm import tqdm
 
-from data_processing import (
+from .data_processing import (
     dict_to_np,
     discretize_features,
     get_discrete_info,
@@ -307,7 +307,7 @@ def prepare_example_embedding_dicts(
         ``{class_name: [(discretized_feature_dict, snr_str), …], …}``
     """
     # Avoid circular import — only need a tiny helper
-    from generated_dataset import get_dataset_snr
+    from .generated_dataset import get_dataset_snr
 
     feature_names = pca_feature_names(n_components)
 
@@ -380,15 +380,7 @@ def load_encoder_for_embeddings(
         The ``.encoder`` sub-module, on *device*, in eval mode.
     device : torch.device
     """
-    import sys as _sys
-
-    rep_learning_dir = os.path.join(
-        os.path.dirname(__file__), "..", "representation learning",
-    )
-    if rep_learning_dir not in _sys.path:
-        _sys.path.insert(0, rep_learning_dir)
-
-    from classifier_training import ImageClassifier  # noqa: E402
+    from src.representation_learning.classifier_training import ImageClassifier
 
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

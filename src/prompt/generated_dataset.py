@@ -82,9 +82,7 @@ import numpy as np
 from sklearn.preprocessing import KBinsDiscretizer, StandardScaler
 from tqdm import tqdm
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-from naming import (
+from src.naming import (
     VALID_SOURCES,
     converted_json_name,
     get_source,
@@ -92,7 +90,7 @@ from naming import (
     train_pkl_name,
 )
 
-from data_processing import (
+from .data_processing import (
     create_options,
     dict_to_np,
     discretize_features,
@@ -319,7 +317,7 @@ def get_processed_data(
         random selection from the hardcoded pool.
         """
         if rag_retriever is not None:
-            from rag import retrieve_example_dict_for_signal
+            from .rag import retrieve_example_dict_for_signal
             return retrieve_example_dict_for_signal(
                 rag_retriever,
                 signal_features[i],
@@ -529,7 +527,7 @@ def get_embedding_processed_data(
         Same structure as :func:`get_processed_data`, plus ``'pca'`` and
         ``'feature_type'`` keys.
     """
-    from embedding_features import (
+    from .embedding_features import (
         compute_embedding_features,
         extract_embeddings_from_paths,
         prepare_example_embedding_dicts,
@@ -706,7 +704,7 @@ def build_train(
     print(f"Train signals: {len(train_signal_paths)} | Classes: {len(set(train_labels))}")
 
     if feature_type == "embeddings":
-        from embedding_features import load_encoder_for_embeddings
+        from .embedding_features import load_encoder_for_embeddings
 
         if encoder_weights is None:
             raise ValueError("--encoder_weights is required for feature_type=embeddings")
@@ -752,8 +750,8 @@ def build_train(
 
     # ── Optionally build RAG index ───────────────────────────────────────
     if use_rag:
-        from rag import build_rag_index
-        from data_processing import dict_to_np
+        from .rag import build_rag_index
+        from .data_processing import dict_to_np
 
         # Build feature matrix from scaled stats
         feat_names = train_data["feature_names"]
@@ -867,7 +865,7 @@ def build_test(
     # Optionally load RAG retriever for similarity-based example selection
     rag_retriever = None
     if use_rag:
-        from rag import load_rag_index
+        from .rag import load_rag_index
         rag_retriever = load_rag_index(train_pkl)
 
     if feature_type == "embeddings":
@@ -927,7 +925,7 @@ def build_test(
 
 def _build_epilog() -> str:
     """Generate the ``--help`` epilog dynamically from :data:`naming.SOURCES`."""
-    from naming import SOURCES
+    from src.naming import SOURCES
 
     lines = ["Prediction sources & output naming:"]
     for src in SOURCES.values():

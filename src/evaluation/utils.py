@@ -15,9 +15,7 @@ from collections import defaultdict
 from typing import Dict, List, Tuple, Optional
 from tqdm import tqdm
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-from naming import test_pkl_name
+from src.naming import test_pkl_name
 
 
 # ---------------------------------------------------------------------------

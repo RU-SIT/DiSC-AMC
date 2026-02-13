@@ -4,7 +4,7 @@ from glob import glob
 import numpy as np
 from pyts.approximation import SymbolicFourierApproximation as SFA
 
-from data_processing import load_npy_file
+from .data_processing import load_npy_file
 
 def stack_iq(batch):
     # batch shape: (N, 2, L)

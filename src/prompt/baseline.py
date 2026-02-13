@@ -1,5 +1,5 @@
 # %%
-from data_processing import load_processed_data
+from .data_processing import load_processed_data
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.svm import SVC

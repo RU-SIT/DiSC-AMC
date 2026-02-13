@@ -10,13 +10,13 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler, KBinsDiscretizer
 from tqdm import tqdm
 from sklearn.preprocessing import KBinsDiscretizer
-from data_processing import (
+from .data_processing import (
     load_npy_file, get_features, dict_to_np, get_discrete_info, get_scaled_info,
     discretize_features, create_options, generate_prompt, save_processed_data, reduce_example_dict, get_family_example,
     get_family_label
     )
 
-from templates import (QUESTION_TEMPLATE, INPUT_TEXT, PROMPT_TEMPLATE, CASCADE_PROMPT, MODULATION_FAMILIES, AMPLITUDE_FAMILY, ANANLOG_FAMILY, QAM_FAMILY, PHASE_FAMILY, FREQUENCY_FAMILY)
+from .templates import (QUESTION_TEMPLATE, INPUT_TEXT, PROMPT_TEMPLATE, CASCADE_PROMPT, MODULATION_FAMILIES, AMPLITUDE_FAMILY, ANANLOG_FAMILY, QAM_FAMILY, PHASE_FAMILY, FREQUENCY_FAMILY)
 
 
 def get_radioml_label(signal_path):

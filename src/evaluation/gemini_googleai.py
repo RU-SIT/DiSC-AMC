@@ -7,10 +7,9 @@ from tqdm import tqdm
 from dotenv import load_dotenv
 import google.generativeai as genai
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from naming import ExperimentConfig, eval_result_name
+from src.naming import ExperimentConfig, eval_result_name
 
-from utils import (
+from .utils import (
     load_data, build_prompts_data, load_existing_results,
     get_prompts_to_process, save_results_atomic, build_result_entry,
     sort_results_by_prompt, get_unique_prompts, print_metrics, clean_acc,

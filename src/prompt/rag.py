@@ -291,7 +291,7 @@ def rag_example_dict_from_paths(
     This loads each ``.npy`` file and splits into real/imaginary columns,
     matching the existing ``all_example_dict`` structure.
     """
-    from data_processing import load_npy_file, split_real_imaginary
+    from .data_processing import load_npy_file, split_real_imaginary
 
     example_dict: Dict[str, List[Tuple[np.ndarray, str]]] = {}
     for label, items in retrieved.items():

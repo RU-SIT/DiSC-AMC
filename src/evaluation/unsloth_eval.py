@@ -10,10 +10,9 @@ import torch
 from unsloth import FastLanguageModel, FastVisionModel
 from unsloth.chat_templates import get_chat_template
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from naming import ExperimentConfig, eval_result_name
+from src.naming import ExperimentConfig, eval_result_name
 
-from utils import (
+from .utils import (
     extract_tag, load_data, build_prompts_data, load_existing_results,
     get_prompts_to_process, save_results_atomic, build_result_entry,
     sort_results_by_prompt, get_unique_prompts, print_metrics,
@@ -25,14 +24,14 @@ print("CUDA device count:", torch.cuda.device_count())
 CLASS_NAMES = ['4ASK', '4PAM', '8ASK', '16PAM', 'CPFSK', 'DQPSK', 'GFSK', 'GMSK', 'OQPSK', 'OOK']
 
 
-def load_model_and_tokenizer(model_name: str = 'unsloth/gemma-3-27b-it-unsloth-bnb-4bit'):
+def load_model_and_tokenizer(model_name: str = 'unsloth/gemma-3-27b-it-unsloth-bnb-4bit', cache_dir="../../models"):
     """Load an Unsloth model and tokenizer."""
     model, tokenizer = FastVisionModel.from_pretrained(
         model_name=model_name,
         max_seq_length=200000,
         dtype=None,
         load_in_4bit=True,
-        cache_dir="../../models",
+        cache_dir=cache_dir,
     )
     FastLanguageModel.for_inference(model)
     return model, tokenizer
@@ -85,7 +84,8 @@ def main(dataset_folder, prompt_type='discret_prompts',
          model_name="gemini-2.5-flash", noise_mode='noisySignal',
          n_bins=10, top_k=5, num_tries=3, prediction_source='dnn',
          feature_type='stats', n_components=0,
-         ood_train_folder='', use_rag=False, rag_k=0):
+         ood_train_folder='', use_rag=False, rag_k=0,
+         cache_dir="../../models", data_root="../../data/own"):
     cfg = ExperimentConfig(
         dataset_folder=dataset_folder,
         prediction_source=prediction_source,
@@ -97,15 +97,15 @@ def main(dataset_folder, prompt_type='discret_prompts',
         ood_train_folder=ood_train_folder,
         use_rag=use_rag,
         rag_k=rag_k,
-    )
+        )
     results = []
     filepath = _output_path(cfg, prompt_type, model_name)
 
     try:
-        data, _, _ = load_data(f'../../data/own/{dataset_folder}', noise_mode, n_bins, top_k,
+        data, _, _ = load_data(f'{data_root}/{dataset_folder}', noise_mode, n_bins, top_k,
                                prediction_source=prediction_source,
                                feature_tag=cfg.build_tag().split('_', 1)[-1] if cfg.feature_type == 'embeddings' else '')
-        model, tokenizer = load_model_and_tokenizer(model_name)
+        model, tokenizer = load_model_and_tokenizer(model_name, cache_dir=cache_dir)
 
         all_prompts_data = build_prompts_data(data, prompt_type)
         results, prompts_done, completed = load_existing_results(filepath, num_tries)

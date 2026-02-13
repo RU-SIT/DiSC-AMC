@@ -17,7 +17,7 @@ from .data_processing import (
     load_processed_data,
 )
 
-from ..spectrogram.embedding_pipeline import (
+from ..representation_learning.embedding_pipeline import (
     extract_label,
     load_encoder,
     extract_embeddings,

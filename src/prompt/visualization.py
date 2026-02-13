@@ -478,7 +478,7 @@ if __name__ == "__main__":
     # fig_3d.show()
 
     # Visualizing Summary Statistics as Features
-    from data_processing import load_processed_data
+    from .data_processing import load_processed_data
 
     # Load the processed data
     data = load_processed_data('../../data/RadioML/train_data.pkl')
