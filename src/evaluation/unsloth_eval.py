@@ -85,7 +85,8 @@ def main(dataset_folder, prompt_type='discret_prompts',
          n_bins=10, top_k=5, num_tries=3, prediction_source='dnn',
          feature_type='stats', n_components=0,
          ood_train_folder='', use_rag=False, rag_k=0,
-         cache_dir="../../models", data_root="../../data/own"):
+         cache_dir="../../models", data_root="../../data/own",
+         output_dir="."):
     cfg = ExperimentConfig(
         dataset_folder=dataset_folder,
         prediction_source=prediction_source,
@@ -99,7 +100,7 @@ def main(dataset_folder, prompt_type='discret_prompts',
         rag_k=rag_k,
         )
     results = []
-    filepath = _output_path(cfg, prompt_type, model_name)
+    filepath = os.path.join(output_dir, _output_path(cfg, prompt_type, model_name))
 
     try:
         data, _, _ = load_data(f'{data_root}/{dataset_folder}', noise_mode, n_bins, top_k,
@@ -142,7 +143,8 @@ def main(dataset_folder, prompt_type='discret_prompts',
 
 def read_results(dataset_folder, prompt_type, model_name, noise_mode, n_bins, top_k,
                  prediction_source='dnn', feature_type='stats', n_components=0,
-                 ood_train_folder='', use_rag=False, rag_k=0):
+                 ood_train_folder='', use_rag=False, rag_k=0,
+                 output_dir='.'):
     """Read results from JSON file."""
     import json
     cfg = ExperimentConfig(
@@ -157,7 +159,7 @@ def read_results(dataset_folder, prompt_type, model_name, noise_mode, n_bins, to
         use_rag=use_rag,
         rag_k=rag_k,
     )
-    filepath = _output_path(cfg, prompt_type, model_name)
+    filepath = os.path.join(output_dir, _output_path(cfg, prompt_type, model_name))
     with open(filepath, 'r') as f:
         return json.load(f)
 

@@ -126,6 +126,160 @@ if [[ "$USE_RAG" == "true" ]]; then
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Experiment management
+# ═══════════════════════════════════════════════════════════════════════════
+
+_shorten_prompt_type() {
+    case "$1" in
+        discret_prompts)      echo "disc" ;;
+        old_discret_prompts)  echo "old_disc" ;;
+        prompts)              echo "cont" ;;
+        old_prompts)          echo "old_cont" ;;
+        *)                    echo "$1" ;;
+    esac
+}
+
+_shorten_model() {
+    # Strip provider prefix and keep recognisable short name
+    local m="$1"
+    m="${m#unsloth/}"        # strip unsloth/
+    m="${m%%-unsloth*}"      # strip -unsloth-bnb-4bit etc.
+    echo "$m"
+}
+
+# Build the experiment folder base name (without version suffix).
+# Sets _EXP_BASE_NAME for use by setup/find functions.
+_build_exp_base_name() {
+    local provider="${EXP_PROVIDER:-unknown}"
+    local model_short
+    case "$provider" in
+        gemini)   model_short="$(_shorten_model "$GEMINI_MODEL")" ;;
+        openai)   model_short="$(_shorten_model "$OPENAI_MODEL")" ;;
+        unsloth)  model_short="$(_shorten_model "$UNSLOTH_MODEL")" ;;
+        *)        model_short="unknown" ;;
+    esac
+
+    local feat_tag=""
+    if [[ "$PREDICTION_SOURCE" != "dnn" ]]; then
+        feat_tag+="${PREDICTION_SOURCE}"
+    fi
+    if [[ -n "$OOD_TRAIN_FOLDER" ]]; then
+        [[ -n "$feat_tag" ]] && feat_tag+="_"
+        feat_tag+="ood"
+    fi
+    if [[ "$FEATURE_TYPE" == "embeddings" && "$N_COMPONENTS" -gt 0 ]]; then
+        [[ -n "$feat_tag" ]] && feat_tag+="_"
+        feat_tag+="emb${N_COMPONENTS}"
+    fi
+    if [[ "$USE_RAG" == "true" && "$RAG_K" -gt 0 ]]; then
+        [[ -n "$feat_tag" ]] && feat_tag+="_"
+        feat_tag+="rag${RAG_K}"
+    fi
+
+    local prompt_short
+    prompt_short="$(_shorten_prompt_type "$PROMPT_TYPE")"
+
+    _EXP_BASE_NAME="${DATASET_FOLDER}"
+    [[ -n "$feat_tag" ]] && _EXP_BASE_NAME+="_${feat_tag}"
+    _EXP_BASE_NAME+="_${prompt_short}_${provider}_${model_short}"
+}
+
+# ─── Create a NEW experiment folder (for step 7 / writing) ──────────────
+setup_experiment() {
+    _build_exp_base_name
+
+    # Auto-increment version suffix
+    local version=1
+    while [[ -d "${EXP_DIR}/${_EXP_BASE_NAME}_v$(printf '%02d' $version)" ]]; do
+        version=$((version + 1))
+    done
+    local exp_name="${_EXP_BASE_NAME}_v$(printf '%02d' $version)"
+
+    EXP_RUN_DIR="${EXP_DIR}/${exp_name}"
+    mkdir -p "$EXP_RUN_DIR"
+    echo -e "${GREEN}  NEW experiment: ${EXP_RUN_DIR}${NC}"
+
+    # ── Write config.json ────────────────────────────────────────────────
+    local provider="${EXP_PROVIDER:-unknown}"
+    local git_hash=""
+    git_hash=$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo "n/a")
+
+    cat > "${EXP_RUN_DIR}/config.json" <<EOCFG
+{
+  "experiment_id": "${exp_name}",
+  "timestamp": "$(date -Iseconds)",
+  "git_hash": "${git_hash}",
+  "dataset": {
+    "dataset_folder": "${DATASET_FOLDER}",
+    "train_dataset_folder": "${TRAIN_DATASET_FOLDER}",
+    "data_root": "${DATA_ROOT}",
+    "noise_mode": "${NOISE_MODE}"
+  },
+  "model": {
+    "backbone": "${BACKBONE}",
+    "prediction_source": "${PREDICTION_SOURCE}",
+    "top_k": ${TOP_K},
+    "knn_k": ${KNN_K}
+  },
+  "features": {
+    "feature_type": "${FEATURE_TYPE}",
+    "n_components": ${N_COMPONENTS},
+    "n_bins": ${N_BINS}
+  },
+  "rag": {
+    "use_rag": ${USE_RAG},
+    "rag_k": ${RAG_K}
+  },
+  "evaluation": {
+    "prompt_type": "${PROMPT_TYPE}",
+    "num_tries": ${NUM_TRIES},
+    "provider": "${provider}",
+    "llm_model": "$(_shorten_model "$(case $provider in gemini) echo $GEMINI_MODEL;; openai) echo $OPENAI_MODEL;; unsloth) echo $UNSLOTH_MODEL;; esac)")",
+    "llm_model_full": "$(case $provider in gemini) echo $GEMINI_MODEL;; openai) echo $OPENAI_MODEL;; unsloth) echo $UNSLOTH_MODEL;; esac)"
+  },
+  "paths": {
+    "project_root": "${PROJECT_ROOT}",
+    "exp_dir": "${EXP_DIR}",
+    "encoder_weights": "${ENCODER_WEIGHTS}",
+    "classifier_path": "${CLASSIFIER_PATH}"
+  }
+}
+EOCFG
+    echo "  config.json written."
+
+    # ── Start logging (tee to both terminal and log file) ────────────────
+    EXP_LOG="${EXP_RUN_DIR}/pipeline.log"
+    exec > >(tee -a "$EXP_LOG") 2>&1
+    echo "═══ Pipeline log started at $(date -Iseconds) ═══"
+}
+
+# ─── Find the LATEST existing experiment folder (for step 8 / reading) ──
+find_latest_experiment() {
+    _build_exp_base_name
+
+    # Find highest version that exists
+    local latest=""
+    local version=1
+    while [[ -d "${EXP_DIR}/${_EXP_BASE_NAME}_v$(printf '%02d' $version)" ]]; do
+        latest="${EXP_DIR}/${_EXP_BASE_NAME}_v$(printf '%02d' $version)"
+        version=$((version + 1))
+    done
+
+    if [[ -z "$latest" ]]; then
+        echo "ERROR: No existing experiment folder found for ${_EXP_BASE_NAME}_v*" >&2
+        exit 1
+    fi
+
+    EXP_RUN_DIR="$latest"
+    echo -e "${GREEN}  Using existing experiment: ${EXP_RUN_DIR}${NC}"
+
+    # Append to existing log
+    EXP_LOG="${EXP_RUN_DIR}/pipeline.log"
+    exec > >(tee -a "$EXP_LOG") 2>&1
+    echo "═══ Pipeline log resumed at $(date -Iseconds) ═══"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Step functions
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -301,6 +455,7 @@ main(
     ood_train_folder='${OOD_TRAIN_FOLDER}',
     use_rag=${USE_RAG_PY},
     rag_k=${RAG_K_EVAL},
+    output_dir='${EXP_RUN_DIR}',
 )
 "
 }
@@ -324,6 +479,7 @@ main(
     ood_train_folder='${OOD_TRAIN_FOLDER}',
     use_rag=${USE_RAG_PY},
     rag_k=${RAG_K_EVAL},
+    output_dir='${EXP_RUN_DIR}',
 )
 "
 }
@@ -349,6 +505,7 @@ main(
     rag_k=${RAG_K_EVAL},
     cache_dir='${MODEL_DIR}',
     data_root='${DATA_ROOT}',
+    output_dir='${EXP_RUN_DIR}',
 )
 "
 }
@@ -373,6 +530,7 @@ results = read_results(
     ood_train_folder='${OOD_TRAIN_FOLDER}',
     use_rag=${USE_RAG_PY},
     rag_k=${RAG_K_EVAL},
+    output_dir='${EXP_RUN_DIR}',
 )
 sorted_results = sort_results_by_prompt(results)
 print(f'Unique prompts: {len(get_unique_prompts(results))}')
@@ -400,6 +558,7 @@ results = read_results(
     ood_train_folder='${OOD_TRAIN_FOLDER}',
     use_rag=${USE_RAG_PY},
     rag_k=${RAG_K_EVAL},
+    output_dir='${EXP_RUN_DIR}',
 )
 sorted_results = sort_results_by_prompt(results)
 print(f'Unique prompts: {len(get_unique_prompts(results))}')
@@ -427,6 +586,7 @@ results = read_results(
     ood_train_folder='${OOD_TRAIN_FOLDER}',
     use_rag=${USE_RAG_PY},
     rag_k=${RAG_K_EVAL},
+    output_dir='${EXP_RUN_DIR}',
 )
 sorted_results = sort_results_by_prompt(results)
 print(f'Unique prompts: {len(get_unique_prompts(results))}')
@@ -438,8 +598,22 @@ print_metrics(sorted_results, CLASS_NAMES)
 # ═══════════════════════════════════════════════════════════════════════════
 # RUN — Comment out any step you don't need
 # ═══════════════════════════════════════════════════════════════════════════
+
+# ─── Set the provider BEFORE calling setup/find ─────────────────────────
+# Uncomment exactly ONE of the following:
+# EXP_PROVIDER="gemini"
+# EXP_PROVIDER="openai"
+EXP_PROVIDER="unsloth"
+
+# ─── Choose ONE: ────────────────────────────────────────────────────────
+# setup_experiment          # ← Use for NEW runs (step 7): creates exp/ folder
+find_latest_experiment      # ← Use for READ-ONLY (step 8): reuses latest folder
+# EXP_RUN_DIR="..."        # ← Or set manually to a specific folder path
+
 echo "DATA_ROOT=$DATA_ROOT"
 echo "BACKBONE=$BACKBONE"
+echo "PREDICTION_SOURCE=$PREDICTION_SOURCE"
+echo "TOP_K=$TOP_K"
 echo "USE_RAG=$USE_RAG"
 echo "RAG_K=$RAG_K"
 echo "FEATURE_TYPE=$FEATURE_TYPE"
@@ -451,6 +625,7 @@ echo "DATASET_PATH=$DATASET_PATH"
 echo "CENTROID_OUTPUT=$CENTROID_OUTPUT"
 echo "FAISS_INDEX_PATH=$FAISS_INDEX_PATH"
 echo "KNN_K=$KNN_K"
+echo "EXP_RUN_DIR=$EXP_RUN_DIR"
 
 # step2_train_classifier
 # step3_compute_centroids
@@ -463,14 +638,14 @@ echo "KNN_K=$KNN_K"
 # Uncomment the provider(s) you want to run:
 # step7_query_gemini
 # step7_query_openai
-step7_query_unsloth
+# step7_query_unsloth
 
 # Uncomment to compute metrics from saved results:
 # step8_metrics_gemini
 # step8_metrics_openai
-# step8_metrics_unsloth
+step8_metrics_unsloth
 
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}  Pipeline complete.${NC}"
+echo -e "${GREEN}  Pipeline complete.  Results → ${EXP_RUN_DIR}${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
