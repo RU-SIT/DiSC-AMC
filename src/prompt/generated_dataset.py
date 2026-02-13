@@ -494,6 +494,8 @@ def get_embedding_processed_data(
     decimal_precision: int = 3,
     add_context: bool = True,
     ktop_info: Optional[List[Any]] = None,
+    rag_retriever=None,
+    rag_k: int = 10,
 ) -> Dict[str, Any]:
     """Process signals using encoder embeddings instead of statistical features.
 
@@ -558,23 +560,75 @@ def get_embedding_processed_data(
     )
 
     # ── 4. Pre-process few-shot examples ─────────────────────────────────
-    scaled_ex, discret_ex = prepare_example_embedding_dicts(
-        encoder, device, example_paths, noise_mode,
-        n_components, pca, discretizers, scaler, batch_size,
-    )
+    if rag_retriever is not None:
+        from src.prompt.rag import retrieve_examples
+        from src.prompt.data_processing import dict_to_np
+
+        # Build feature matrix for RAG queries (scaled PCA vectors)
+        signal_features = np.array([
+            dict_to_np(s, feature_names) for s in scaled_dicts
+        ], dtype=np.float32)
+
+        def _rag_example_dicts(i: int):
+            """Retrieve nearest examples via RAG, then embed them."""
+            retrieved = retrieve_examples(
+                rag_retriever,
+                signal_features[i],
+                rag_k=rag_k,
+                exclude_same_path=signal_paths[i],
+            )
+            # retrieved: {label: [(path, snr), ...]}
+            # Convert paths to {label: [path, ...]} for embedding pipeline
+            rag_example_paths = {
+                label: [p for p, _snr in items]
+                for label, items in retrieved.items()
+            }
+            s_ex, d_ex = prepare_example_embedding_dicts(
+                encoder, device, rag_example_paths, noise_mode,
+                n_components, pca, discretizers, scaler, batch_size,
+            )
+            return s_ex, d_ex
+
+        # Pre-compute per-signal RAG example dicts
+        rag_scaled_examples = []
+        rag_discret_examples = []
+        for i in tqdm(range(len(signal_paths)), desc="RAG example retrieval + embedding"):
+            s_ex, d_ex = _rag_example_dicts(i)
+            rag_scaled_examples.append(s_ex)
+            rag_discret_examples.append(d_ex)
+    else:
+        scaled_ex, discret_ex = prepare_example_embedding_dicts(
+            encoder, device, example_paths, noise_mode,
+            n_components, pca, discretizers, scaler, batch_size,
+        )
+        rag_scaled_examples = None
+        rag_discret_examples = None
 
     # ── 5. OLD PROMPTS ───────────────────────────────────────────────────
     options: List[str] = list(set(signal_labels))
     options_str: str = create_options(options)
+
+    # ── Helper: get example dict for signal i ────────────────────────────
+    def _get_scaled_ex(i: int):
+        if rag_scaled_examples is not None:
+            return rag_scaled_examples[i]
+        return reduce_example_dict(
+            scaled_ex, get_dataset_label(signal_paths[i]), max_examples=10,
+        )
+
+    def _get_discret_ex(i: int):
+        if rag_discret_examples is not None:
+            return rag_discret_examples[i]
+        return reduce_example_dict(
+            discret_ex, get_dataset_label(signal_paths[i]), max_examples=10,
+        )
 
     old_context_prompts: List[str] = [
         generate_prompt(
             sig_info, INPUT_TEXT, [options_str],
             PROMPT_TEMPLATE, [], feature_names,
             processed=True, add_context=add_context,
-            example_dict=reduce_example_dict(
-                scaled_ex, get_dataset_label(signal_paths[i]), max_examples=10,
-            ),
+            example_dict=_get_scaled_ex(i),
             decimal_precision=decimal_precision, options=options,
             discretizers=None, scaler=scaler, discretized=False,
             examples_processed=True,
@@ -589,9 +643,7 @@ def get_embedding_processed_data(
             sig_info, INPUT_TEXT, [options_str],
             PROMPT_TEMPLATE, [], feature_names,
             processed=True, add_context=add_context,
-            example_dict=reduce_example_dict(
-                discret_ex, get_dataset_label(signal_paths[i]), max_examples=10,
-            ),
+            example_dict=_get_discret_ex(i),
             decimal_precision=decimal_precision, options=options,
             discretizers=discretizers, scaler=scaler, discretized=True,
             examples_processed=True,
@@ -754,7 +806,7 @@ def build_train(
         from src.prompt.rag import build_rag_index
         from src.prompt.data_processing import dict_to_np
 
-        # Build feature matrix from scaled stats
+        # Build feature matrix from scaled feature dicts (stats or PCA embeddings)
         feat_names = train_data["feature_names"]
         feat_matrix = np.array([
             dict_to_np(s, feat_names) for s in train_data["stats"]
@@ -895,6 +947,8 @@ def build_test(
             decimal_precision=3,
             add_context=True,
             ktop_info=ktop_info,
+            rag_retriever=rag_retriever,
+            rag_k=rag_k,
         )
     else:
         feature_names = feature_names or DEFAULT_FEATURE_NAMES
