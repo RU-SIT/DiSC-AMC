@@ -86,6 +86,13 @@ SOURCES: Dict[str, PredictionSource] = {
         converted_json="ntop{topk}_rf_predictions.json",
         pkl_tag="rf",
     ),
+    "faiss": PredictionSource(
+        key="faiss",
+        label="FAISS kNN voting",
+        raw_json="top{topk}_faiss_predictions.json",
+        converted_json="ntop{topk}_faiss_predictions.json",
+        pkl_tag="faiss",
+    ),
 }
 
 VALID_SOURCES: List[str] = list(SOURCES.keys())
@@ -142,7 +149,7 @@ class ExperimentConfig:
     """Dataset directory name, e.g. ``"-11_-15dB"``."""
 
     prediction_source: str = "dnn"
-    """Which shortlisting source: ``"dnn"`` | ``"centroid"`` | ``"rf"``."""
+    """Which shortlisting source: ``"dnn"`` | ``"centroid"`` | ``"rf"`` | ``"faiss"``."""
 
     noise_mode: str = "noisySignal"
     """``"noisySignal"`` or ``"noiselessSignal"``."""

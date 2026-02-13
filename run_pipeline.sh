@@ -59,10 +59,11 @@ FREEZE_ENCODER=false        # true → add --freeze_encoder flag
 FIND_CLOSEST=true           # true → also print closest sample per class
 
 # ─── Prediction & discretisation (Steps 4-6) ────────────────────────────
-PREDICTION_SOURCE="centroid" # dnn | centroid | rf  (defined in src/naming.py)
+PREDICTION_SOURCE="centroid" # dnn | centroid | rf | faiss  (defined in src/naming.py)
 TOP_K=5
 NOISE_MODE="noisySignal"     # noisySignal | noiselessSignal
 N_BINS=5
+KNN_K=50                     # kNN neighbours for FAISS voting (only when faiss)
 
 # ─── Feature type (Step 6) ──────────────────────────────────────────────
 # RAG (Retrieval-Augmented Generation) — optional
@@ -94,6 +95,12 @@ CENTROID_OUTPUT="${DATASET_PATH}/train/class_centers.json"
 if [[ -n "$TRAIN_DATASET_FOLDER" && "$TRAIN_DATASET_FOLDER" != "$DATASET_FOLDER" ]]; then
     CENTROID_OUTPUT="${DATA_ROOT}/${TRAIN_DATASET_FOLDER}/train/class_centers.json"
     log_step "OOD mode: reusing train centroids from ${TRAIN_DATASET_FOLDER}"
+fi
+
+# FAISS index path (for PREDICTION_SOURCE=faiss)
+FAISS_INDEX_PATH="${DATASET_PATH}/train/faiss_knn"
+if [[ -n "$TRAIN_DATASET_FOLDER" && "$TRAIN_DATASET_FOLDER" != "$DATASET_FOLDER" ]]; then
+    FAISS_INDEX_PATH="${DATA_ROOT}/${TRAIN_DATASET_FOLDER}/train/faiss_knn"
 fi
 
 # Derived filenames
@@ -159,6 +166,17 @@ step3_compute_centroids() {
         $closest_flag
 }
 
+step3b_build_faiss_index() {
+    log_step "STEP 3b — Build FAISS index for kNN prediction"
+    cd "$PROJECT_ROOT"
+    python -m src.representation_learning.inference build_faiss \
+        --backbone "$BACKBONE" \
+        --weights "$CLASSIFIER_PATH" \
+        --train_path "${DATASET_PATH}/train" \
+        --output "$FAISS_INDEX_PATH" \
+        --image_size "$IMAGE_SIZE"
+}
+
 step4a_evaluate_test() {
     log_step "STEP 4a — Evaluate on test set (accuracy report)"
     cd "$PROJECT_ROOT"
@@ -176,9 +194,11 @@ step4b_predict_topk() {
     log_step "STEP 4b — Top-k predictions (${PREDICTION_SOURCE})"
     cd "$PROJECT_ROOT"
 
-    local centroid_flag=""
+    local extra_flags=""
     if [[ "$PREDICTION_SOURCE" == "centroid" ]]; then
-        centroid_flag="--centroid_path $CENTROID_OUTPUT"
+        extra_flags="--centroid_path $CENTROID_OUTPUT"
+    elif [[ "$PREDICTION_SOURCE" == "faiss" ]]; then
+        extra_flags="--faiss_index_path $FAISS_INDEX_PATH --knn_k $KNN_K"
     fi
 
     python -m src.representation_learning.inference predict \
@@ -188,7 +208,7 @@ step4b_predict_topk() {
         --topk "$TOP_K" \
         --output "${DATASET_PATH}/${RAW_JSON}" \
         --image_size "$IMAGE_SIZE" \
-        $centroid_flag
+        $extra_flags
 
     echo "  → Saved ${RAW_JSON}"
 }
@@ -429,18 +449,21 @@ echo "PROJECT_ROOT=$PROJECT_ROOT"
 echo "DATASET_FOLDER=$DATASET_FOLDER"
 echo "DATASET_PATH=$DATASET_PATH"
 echo "CENTROID_OUTPUT=$CENTROID_OUTPUT"
+echo "FAISS_INDEX_PATH=$FAISS_INDEX_PATH"
+echo "KNN_K=$KNN_K"
 
 # step2_train_classifier
 # step3_compute_centroids
+# step3b_build_faiss_index   # only needed for PREDICTION_SOURCE=faiss
 # step4a_evaluate_test
 # step4b_predict_topk
 # step5_convert_keys
-step6_generate_datasets
+# step6_generate_datasets
 
 # Uncomment the provider(s) you want to run:
 # step7_query_gemini
 # step7_query_openai
-# step7_query_unsloth
+step7_query_unsloth
 
 # Uncomment to compute metrics from saved results:
 # step8_metrics_gemini
