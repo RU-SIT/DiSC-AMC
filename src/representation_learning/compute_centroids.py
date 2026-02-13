@@ -28,9 +28,9 @@ import os
 
 from torchvision import transforms
 
-from .classifier_training import ImageClassifier
-from .data_loader import DatasetWithPath
-from .embedding_pipeline import compute_class_centroids, save_centroids, find_closest_to_centroids
+from src.representation_learning.classifier_training import ImageClassifier
+from src.representation_learning.data_loader import DatasetWithPath
+from src.representation_learning.embedding_pipeline import compute_class_centroids, save_centroids, find_closest_to_centroids
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -42,7 +42,7 @@ CLASSES = [
 
 def main(args: argparse.Namespace) -> None:
     """Load model, extract features, compute centroids, save JSON."""
-    from inference import load_classifier  # local import to avoid circular
+    from src.representation_learning.inference import load_classifier  # local import to avoid circular
 
     classes = args.classes.split(",")
 
