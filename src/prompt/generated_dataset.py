@@ -368,6 +368,7 @@ def get_processed_data(
                     signal_features[i],
                     rag_k=rag_k,
                     signal_path=signal_paths[i],
+                    required_classes=ktop_info[i],
                 )
                 return ktop_example(ktop_info[i], example_dict=full)
             return ktop_example(ktop_info[i], example_dict=all_example_dict)
