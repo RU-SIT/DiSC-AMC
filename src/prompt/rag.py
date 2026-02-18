@@ -323,7 +323,7 @@ def _fill_missing_classes(
 
         # Compute L2 distances from query to this class's vectors
         # query shape: (1, D),  cls_vecs shape: (M, D)
-        diffs = cls_vecs - query  # broadcasting (M, D)
+        diffs = (cls_vecs - query).astype(np.float64)  # broadcasting (M, D)
         dists = np.sum(diffs ** 2, axis=1)  # (M,)
 
         # Pick the closest one
@@ -374,6 +374,7 @@ def retrieve_example_dict_for_signal(
     retriever: RAGRetriever,
     query_feature_vector: np.ndarray,
     rag_k: int = 10,
+    min_classes: int = 0,
     signal_path: Optional[str] = None,
     required_classes: Optional[List[str]] = None,
 ) -> Dict[str, List[Tuple[np.ndarray, str]]]:
@@ -405,6 +406,7 @@ def retrieve_example_dict_for_signal(
         retriever,
         query_feature_vector,
         rag_k=rag_k,
+        min_classes=min_classes,
         exclude_same_path=signal_path,
         required_classes=required_classes,
     )
