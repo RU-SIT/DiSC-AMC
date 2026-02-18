@@ -30,7 +30,7 @@ def load_model_and_tokenizer(model_name: str = 'unsloth/gemma-3-27b-it-unsloth-b
         model_name=model_name,
         max_seq_length=200000,
         dtype=None,
-        load_in_4bit=True,
+        load_in_4bit=False,
         cache_dir=cache_dir,
     )
     FastLanguageModel.for_inference(model)
@@ -105,7 +105,7 @@ def main(dataset_folder, prompt_type='discret_prompts',
     try:
         data, _, _ = load_data(f'{data_root}/{dataset_folder}', noise_mode, n_bins, top_k,
                                prediction_source=prediction_source,
-                               feature_tag=cfg.build_tag().split('_', 1)[-1] if cfg.feature_type == 'embeddings' else '')
+                               feature_tag=f'emb{n_components}' if feature_type == 'embeddings' else '')
         model, tokenizer = load_model_and_tokenizer(model_name, cache_dir=cache_dir)
 
         all_prompts_data = build_prompts_data(data, prompt_type)

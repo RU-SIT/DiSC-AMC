@@ -120,7 +120,7 @@ def acc(results: Dict[int, List[Dict]]) -> Tuple[int, int, float]:
             if true_label in v['response_label']:
                 correct += 1
             total += 1
-    return correct, total, correct / total
+    return correct, total, correct / total if total else 0.0
 
 
 def clean_acc(results: Dict[int, List[Dict]], class_names: List[str]) -> Tuple[int, int, float]:
@@ -135,7 +135,7 @@ def clean_acc(results: Dict[int, List[Dict]], class_names: List[str]) -> Tuple[i
             if true_label in found:
                 correct += 1
             total += 1
-    return correct, total, correct / total
+    return correct, total, correct / total if total else 0.0
 
 
 def pass_acc(results: Dict[int, List[Dict]]) -> Tuple[int, int, float]:
@@ -146,13 +146,15 @@ def pass_acc(results: Dict[int, List[Dict]]) -> Tuple[int, int, float]:
         true_label = value[0]['true_label']
         if any(true_label in v['response_label'] for v in value):
             passed += 1
-    return passed, total, passed / total
+    return passed, total, passed / total if total else 0.0
 
 
 def majority_acc(results: Dict[int, List[Dict]]) -> Tuple[int, int, float]:
     """Calculate majority-vote accuracy."""
     passed = 0
     total = len(results)
+    if total == 0:
+        return 0, 0, 0.0
     threshold = len(next(iter(results.values()))) / 2
     for value in results.values():
         true_label = value[0]['true_label']

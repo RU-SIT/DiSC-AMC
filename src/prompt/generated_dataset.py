@@ -110,13 +110,16 @@ from src.prompt.data_processing import (
 from src.prompt.templates import (
     CASCADE_PROMPT,
     END_ENGINEERED_TEXT,
+    END_ENGINEERED_TEXT_V2,
     INPUT_ENGINEERED_TEXT,
+    INPUT_ENGINEERED_TEXT_V2,
     INPUT_TEXT,
     MODULATION_FAMILIES,
     NEW_PROMPT_TEMPLATE,
     PROMPT_ENGINEERED_TEMPLATE,
     PROMPT_TEMPLATE,
     QUESTION_TEMPLATE,
+    get_engineered_template_v2,
 )
 
 # Embedding imports — lazy-loaded via _get_embedding_helpers() to avoid
@@ -213,6 +216,10 @@ def get_processed_data(
     n_bins: int = 5,
     rag_retriever=None,
     rag_k: int = 10,
+    min_classes: int = 0,
+    ktop_instruction_template: Optional[str] = None,
+    ktop_question_template: Optional[str] = None,
+    ktop_end_text: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Processes signal data from file paths to generate features, prompts, and metadata.
@@ -322,6 +329,7 @@ def get_processed_data(
                 rag_retriever,
                 signal_features[i],
                 rag_k=rag_k,
+                min_classes=min_classes,
                 signal_path=signal_paths[i],
             )
         return reduce_example_dict(
@@ -356,8 +364,9 @@ def get_processed_data(
     ######################## K-TOP PROMPTS ########################
     context_prompts, discret_context_prompts = [], []
     if ktop_info is not None:
-        question_template = INPUT_ENGINEERED_TEXT
-        instruction_template = PROMPT_ENGINEERED_TEMPLATE
+        question_template = ktop_question_template or INPUT_ENGINEERED_TEXT
+        instruction_template = ktop_instruction_template or PROMPT_ENGINEERED_TEMPLATE
+        end_text = ktop_end_text or END_ENGINEERED_TEXT
 
         # ── Helper: get k-top example_dict (RAG or legacy) ──────────
         def _get_ktop_example_dict(i: int) -> Dict[str, Any]:
@@ -367,6 +376,7 @@ def get_processed_data(
                     rag_retriever,
                     signal_features[i],
                     rag_k=rag_k,
+                    min_classes=min_classes,
                     signal_path=signal_paths[i],
                     required_classes=ktop_info[i],
                 )
@@ -381,7 +391,7 @@ def get_processed_data(
                 processed=True, add_context=add_context, example_dict=_get_ktop_example_dict(i),
                 decimal_precision=decimal_precision, options=ktop_info[i], 
                 discretizers=None, scaler=scaler, discretized=False
-            ) + END_ENGINEERED_TEXT
+            ) + end_text
             for i, sig_info in tqdm(enumerate(signal_stats), desc="Generating continuous prompts")
         ]
 
@@ -393,7 +403,7 @@ def get_processed_data(
                 processed=True, add_context=add_context, example_dict=_get_ktop_example_dict(i),
                 decimal_precision=decimal_precision, options=ktop_info[i], 
                 discretizers=discretizers, scaler=scaler, discretized=True
-            ) + END_ENGINEERED_TEXT
+            ) + end_text
             for i, sig_info in tqdm(enumerate(signal_discretized_feature), desc="Generating discrete prompts")
         ]
 
@@ -487,6 +497,7 @@ def get_embedding_processed_data(
     example_paths: Dict[str, List[str]],
     n_components: int = 10,
     n_bins: int = 5,
+    top_k: int = 5,
     pca=None,
     discretizers=None,
     scaler=None,
@@ -496,6 +507,10 @@ def get_embedding_processed_data(
     ktop_info: Optional[List[Any]] = None,
     rag_retriever=None,
     rag_k: int = 10,
+    min_classes: int = 0,
+    ktop_instruction_template: Optional[str] = None,
+    ktop_question_template: Optional[str] = None,
+    ktop_end_text: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Process signals using encoder embeddings instead of statistical features.
 
@@ -575,6 +590,7 @@ def get_embedding_processed_data(
                 rag_retriever,
                 signal_features[i],
                 rag_k=rag_k,
+                min_classes=min_classes,
                 exclude_same_path=signal_paths[i],
             )
             # retrieved: {label: [(path, snr), ...]}
@@ -657,16 +673,19 @@ def get_embedding_processed_data(
     context_prompts: List[str] = []
     discret_context_prompts: List[str] = []
     if ktop_info is not None:
+        _q_tmpl = ktop_question_template or INPUT_ENGINEERED_TEXT
+        _i_tmpl = ktop_instruction_template or PROMPT_ENGINEERED_TEMPLATE
+        _end = ktop_end_text or END_ENGINEERED_TEXT
         context_prompts = [
             generate_prompt(
-                sig_info, INPUT_ENGINEERED_TEXT, [ktop_info[i]],
-                PROMPT_ENGINEERED_TEMPLATE, [], feature_names,
+                sig_info, _q_tmpl, [ktop_info[i]],
+                _i_tmpl, [], feature_names,
                 processed=True, add_context=add_context,
-                example_dict=ktop_example(ktop_info[i], example_dict=scaled_ex),
+                example_dict=ktop_example(ktop_info[i], example_dict=_get_scaled_ex(i)),
                 decimal_precision=decimal_precision, options=ktop_info[i],
                 discretizers=None, scaler=scaler, discretized=False,
                 examples_processed=True,
-            ) + END_ENGINEERED_TEXT
+            ) + _end
             for i, sig_info in tqdm(
                 enumerate(scaled_dicts), desc="Generating k-top continuous prompts",
             )
@@ -674,14 +693,14 @@ def get_embedding_processed_data(
 
         discret_context_prompts = [
             generate_prompt(
-                sig_info, INPUT_ENGINEERED_TEXT, [ktop_info[i]],
-                PROMPT_ENGINEERED_TEMPLATE, [], feature_names,
+                sig_info, _q_tmpl, [ktop_info[i]],
+                _i_tmpl, [], feature_names,
                 processed=True, add_context=add_context,
-                example_dict=ktop_example(ktop_info[i], example_dict=discret_ex),
+                example_dict=ktop_example(ktop_info[i], example_dict=_get_discret_ex(i)),
                 decimal_precision=decimal_precision, options=ktop_info[i],
                 discretizers=discretizers, scaler=scaler, discretized=True,
                 examples_processed=True,
-            ) + END_ENGINEERED_TEXT
+            ) + _end
             for i, sig_info in tqdm(
                 enumerate(discretized_dicts), desc="Generating k-top discrete prompts",
             )
@@ -729,6 +748,8 @@ def build_train(
     batch_size: int = 32,
     use_rag: bool = False,
     rag_k: int = 10,
+    min_classes: int = 0,
+    prompt_version: str = "v1",
 ) -> None:
     """Build and save the TRAIN dataset ``.pkl``.
 
@@ -775,9 +796,11 @@ def build_train(
             example_paths=example_paths,
             n_components=n_components,
             n_bins=n_bins,
+            top_k=top_k,
             batch_size=batch_size,
             decimal_precision=3,
             add_context=True,
+            min_classes=min_classes,
         )
     else:
         feature_names = feature_names or DEFAULT_FEATURE_NAMES
@@ -792,6 +815,7 @@ def build_train(
             decimal_precision=3,
             add_context=True,
             n_bins=n_bins,
+            min_classes=min_classes,
         )
 
     out_path = os.path.join(
@@ -837,6 +861,8 @@ def build_test(
     train_dataset_folder: Optional[str] = None,
     use_rag: bool = False,
     rag_k: int = 10,
+    min_classes: int = 0,
+    prompt_version: str = "v1",
 ) -> None:
     """Build and save the TEST dataset ``.pkl``.
 
@@ -915,6 +941,18 @@ def build_test(
         print("  → Generating old-style prompts only (all classes as options)")
 
     # ── Process ──────────────────────────────────────────────────────────
+    # Resolve V2 template overrides (None = V1 default inside data funcs)
+    _v2_inst_cont = _v2_inst_disc = _v2_q = _v2_end = None
+    if prompt_version == "v2":
+        _v2_q = INPUT_ENGINEERED_TEXT_V2
+        _v2_end = END_ENGINEERED_TEXT_V2
+        _v2_inst_cont = get_engineered_template_v2(
+            prediction_source, feature_type, discretized=False,
+        )
+        _v2_inst_disc = get_engineered_template_v2(
+            prediction_source, feature_type, discretized=True,
+        )
+
     # Optionally load RAG retriever for similarity-based example selection
     rag_retriever = None
     if use_rag:
@@ -949,6 +987,10 @@ def build_test(
             ktop_info=ktop_info,
             rag_retriever=rag_retriever,
             rag_k=rag_k,
+            min_classes=min_classes,
+            ktop_instruction_template=_v2_inst_disc,
+            ktop_question_template=_v2_q,
+            ktop_end_text=_v2_end,
         )
     else:
         feature_names = feature_names or DEFAULT_FEATURE_NAMES
@@ -966,6 +1008,10 @@ def build_test(
             n_bins=n_bins,
             rag_retriever=rag_retriever,
             rag_k=rag_k,
+            min_classes=min_classes,
+            ktop_instruction_template=_v2_inst_disc,
+            ktop_question_template=_v2_q,
+            ktop_end_text=_v2_end,
         )
 
     out_path = os.path.join(
@@ -1081,6 +1127,19 @@ if __name__ == "__main__":
         help="Number of nearest neighbours to retrieve per test signal "
              "when --use_rag is enabled (default: 10).",
     )
+    parser.add_argument(
+        "--min_classes", type=int, default=0,
+        help="Minimum number of distinct classes among RAG-retrieved "
+             "examples. When > 0, the kNN search is expanded until this "
+             "many classes are covered (default: 0, i.e. no constraint).",
+    )
+    parser.add_argument(
+        "--prompt_version", type=str, default="v1",
+        choices=["v1", "v2"],
+        help="Prompt template version: 'v1' (original) or 'v2' (source-aware "
+             "with SHORTLISTING METHOD and FEATURE DESCRIPTION context). "
+             "Default: v1.",
+    )
 
     args = parser.parse_args()
 
@@ -1099,6 +1158,8 @@ if __name__ == "__main__":
             batch_size=args.batch_size,
             use_rag=args.use_rag,
             rag_k=args.rag_k,
+            min_classes=args.min_classes,
+            prompt_version=args.prompt_version,
         )
     elif args.mode == "test":
         build_test(
@@ -1116,4 +1177,6 @@ if __name__ == "__main__":
             train_dataset_folder=args.train_dataset_folder,
             use_rag=args.use_rag,
             rag_k=args.rag_k,
+            min_classes=args.min_classes,
+            prompt_version=args.prompt_version,
         )

@@ -425,6 +425,7 @@ def predict_topk_faiss(
     classes: List[str] = CLASSES,
     topk: int = 5,
     knn_k: int = 50,
+    fill_topk: bool = False,
     transform: transforms.Compose = _DEFAULT_TRANSFORM,
     output_path: Optional[str] = None,
 ) -> Dict[str, Dict[str, List[str]]]:
@@ -452,6 +453,11 @@ def predict_topk_faiss(
     knn_k
         Number of nearest neighbours to retrieve from the FAISS index
         for voting.  Should be >= ``topk``.
+    fill_topk
+        If True and kNN voting produces fewer than ``topk`` distinct
+        classes, brute-force scan the index for the closest training
+        sample from each missing class and add it.  This guarantees
+        the output always has exactly ``topk`` classes per image.
     transform
         Image transform pipeline.
     output_path
@@ -534,6 +540,25 @@ def predict_topk_faiss(
             sorted_labels = sorted(label_scores.items(), key=lambda x: x[1], reverse=True)
             pred_classes = [lbl for lbl, _ in sorted_labels[:min(topk, len(sorted_labels))]]
 
+            # Pad to topk if fill_topk is enabled and we have fewer classes
+            if fill_topk and len(pred_classes) < topk:
+                covered = set(pred_classes)
+                missing = [c for c in classes if c not in covered]
+                for cls in missing:
+                    if len(pred_classes) >= topk:
+                        break
+                    # Find indices of training samples belonging to this class
+                    cls_indices = [j for j, lbl in enumerate(train_labels) if lbl == cls]
+                    if not cls_indices:
+                        continue
+                    # Reconstruct vectors for this class and find closest to query
+                    cls_vecs = np.array(
+                        [index.reconstruct(j) for j in cls_indices],
+                        dtype=np.float32,
+                    )
+                    dists_cls = np.sum((cls_vecs - q) ** 2, axis=1)
+                    pred_classes.append(cls)
+
             img_type = os.path.basename(os.path.dirname(img_path))
             fname = os.path.basename(img_path)
             predictions.setdefault(fname, {})[img_type] = pred_classes
@@ -578,6 +603,9 @@ if __name__ == "__main__":
                              "If given, use FAISS kNN voting instead of classifier head.")
     pred_p.add_argument("--knn_k", type=int, default=50,
                         help="Number of nearest neighbours for FAISS kNN voting (default: 50).")
+    pred_p.add_argument("--fill_topk", action="store_true", default=False,
+                        help="Pad FAISS predictions to always have topk distinct classes "
+                             "by brute-force filling from under-represented classes.")
     pred_p.add_argument("--topk", type=int, default=5)
     pred_p.add_argument("--output", type=str, required=True, help="Output JSON path.")
     pred_p.add_argument("--image_size", type=int, default=96)
@@ -626,6 +654,7 @@ if __name__ == "__main__":
                 faiss_index_path=args.faiss_index_path,
                 topk=args.topk,
                 knn_k=args.knn_k,
+                fill_topk=args.fill_topk,
                 transform=t,
                 output_path=args.output,
             )
