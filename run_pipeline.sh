@@ -37,8 +37,8 @@ EXP_DIR="${PROJECT_ROOT}/exp"
 MODEL_DIR="/mnt/d/Rowan/discrete-llm-amc/models"
 
 # ─── Dataset ─────────────────────────────────────────────────────────────
-DATASET_FOLDER="unlabeled_10k"                # folder name under DATA_ROOT
-TRAIN_DATASET_FOLDER=""      # OOD: load train .pkl from this folder
+DATASET_FOLDER="-30dB"                # folder name under DATA_ROOT
+TRAIN_DATASET_FOLDER="unlabaled_10k"      # OOD: load train .pkl from this folder
                                           # set to "" to use DATASET_FOLDER for both
 
 # ─── Model / backbone ───────────────────────────────────────────────────
@@ -69,7 +69,9 @@ KNN_K=50                     # kNN neighbours for FAISS voting (only when faiss)
 # RAG (Retrieval-Augmented Generation) — optional
 USE_RAG=true                # true → build/use FAISS index for example selection
 RAG_K=10                     # number of nearest neighbours per test signal
-FEATURE_TYPE="embeddings"         # stats | embeddings
+MIN_CLASSES=0                # min distinct classes in RAG results (0 = no constraint)
+FEATURE_TYPE="stats"         # stats | embeddings
+PROMPT_VERSION="v1"          # v1 (original) | v2 (source-aware with shortlisting/feature context)
 # If FEATURE_TYPE="embeddings", set these:
 N_COMPONENTS=10              # PCA components to keep
 ENCODER_WEIGHTS="${EXP_DIR}/dino_classifier.pth"
@@ -353,6 +355,8 @@ step4b_predict_topk() {
         extra_flags="--centroid_path $CENTROID_OUTPUT"
     elif [[ "$PREDICTION_SOURCE" == "faiss" ]]; then
         extra_flags="--faiss_index_path $FAISS_INDEX_PATH --knn_k $KNN_K"
+    elif [[ "$PREDICTION_SOURCE" == "faiss_filled" ]]; then
+        extra_flags="--faiss_index_path $FAISS_INDEX_PATH --knn_k $KNN_K --fill_topk"
     fi
 
     python -m src.representation_learning.inference predict \
@@ -394,7 +398,7 @@ step6_generate_datasets() {
       # RAG flags (optional)
     local rag_flags=""
     if [[ "$USE_RAG" == "true" ]]; then
-        rag_flags="--use_rag --rag_k $RAG_K"
+        rag_flags="--use_rag --rag_k $RAG_K --min_classes $MIN_CLASSES"
     fi
 
     # OOD flag: when TRAIN_DATASET_FOLDER is set and differs from
@@ -419,7 +423,8 @@ step6_generate_datasets() {
             --prediction_source "$PREDICTION_SOURCE" \
             --data_root "$DATA_ROOT" \
             $emb_flags \
-            $rag_flags
+            $rag_flags \
+            --prompt_version "$PROMPT_VERSION"
     fi
 
     echo "  6b. Building TEST data (feature_type=${FEATURE_TYPE}) …"
@@ -433,7 +438,8 @@ step6_generate_datasets() {
         --data_root "$DATA_ROOT" \
         $ood_flag \
         $emb_flags \
-        $rag_flags
+        $rag_flags \
+        --prompt_version "$PROMPT_VERSION"
 }
 
 step7_query_gemini() {
@@ -606,9 +612,9 @@ print_metrics(sorted_results, CLASS_NAMES)
 EXP_PROVIDER="unsloth"
 
 # ─── Choose ONE: ────────────────────────────────────────────────────────
-# setup_experiment          # ← Use for NEW runs (step 7): creates exp/ folder
-find_latest_experiment      # ← Use for READ-ONLY (step 8): reuses latest folder
-# EXP_RUN_DIR="..."        # ← Or set manually to a specific folder path
+setup_experiment              # ← Use for NEW runs (step 7): creates exp/ folder
+# find_latest_experiment      # ← Use for READ-ONLY (step 8): reuses latest folder
+# EXP_RUN_DIR="..."          # ← Or set manually to a specific folder path
 
 echo "DATA_ROOT=$DATA_ROOT"
 echo "BACKBONE=$BACKBONE"
@@ -631,14 +637,14 @@ echo "EXP_RUN_DIR=$EXP_RUN_DIR"
 # step3_compute_centroids
 # step3b_build_faiss_index   # only needed for PREDICTION_SOURCE=faiss
 # step4a_evaluate_test
-# step4b_predict_topk
-# step5_convert_keys
-# step6_generate_datasets
+step4b_predict_topk
+step5_convert_keys
+step6_generate_datasets
 
 # Uncomment the provider(s) you want to run:
 # step7_query_gemini
 # step7_query_openai
-# step7_query_unsloth
+step7_query_unsloth
 
 # Uncomment to compute metrics from saved results:
 # step8_metrics_gemini

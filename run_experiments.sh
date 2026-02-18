@@ -2,7 +2,7 @@
 # ═══════════════════════════════════════════════════════════════════════════
 # Batch Experiment Runner — loops over a grid of configurations
 # ═══════════════════════════════════════════════════════════════════════════
-# Usage:  chmod +x run_experiments.sh && ./run_experiments.sh
+# Usage:  chmod +x run_experiments.sh && ./run_experiments.sh [--resume]
 #
 # Runs all experiment combinations:
 #   2 models × 2 datasets × 2 pred_sources × 2 RAG × 2 feature_types = 32
@@ -10,9 +10,32 @@
 # Steps 3, 3b (centroids, FAISS) run once per TRAIN dataset.
 # Steps 4b, 5, 6 run once per (dataset, pred_source, rag, feature_type).
 # Steps 7, 8 run once per model within each data-prep group.
-# Already-completed experiments (exp folder with *_responses.json) are skipped.
+#
+# Options:
+#   --resume   Skip completed experiments and reuse incomplete exp folders
+#              (folders that exist but lack *_responses.json).
+#              Without --resume, incomplete folders are overwritten with a
+#              new version number.
 # ═══════════════════════════════════════════════════════════════════════════
 set -euo pipefail
+
+# ─── CLI argument parsing ────────────────────────────────────────────────
+RESUME=false
+for arg in "$@"; do
+    case "$arg" in
+        --resume) RESUME=true ;;
+        -h|--help)
+            echo "Usage: $0 [--resume]"
+            echo "  --resume  Skip completed experiments & reuse incomplete exp folders"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $arg" >&2
+            echo "Usage: $0 [--resume]" >&2
+            exit 1
+            ;;
+    esac
+done
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -31,7 +54,7 @@ DATASETS=(
     "-11_-15dB|unlabeled_10k"
 )
 
-PREDICTION_SOURCES=("centroid" "faiss" "faiss_filled")
+PREDICTION_SOURCES=("centroid" "faiss" ) #"faiss_filled"
 RAG_OPTIONS=("true" "false")
 FEATURE_TYPES=("stats" "embeddings")
 
@@ -52,6 +75,7 @@ KNN_K=50
 RAG_K=10
 MIN_CLASSES=0
 N_COMPONENTS=10
+PROMPT_VERSION="v1"          # v1 (original) | v2 (source-aware)
 ENCODER_WEIGHTS="${EXP_DIR}/dino_classifier.pth"
 PRETRAINED_PATH="${EXP_DIR}/dino_autoencoder.pth"
 CLASSIFIER_PATH="${EXP_DIR}/dino_classifier.pth"
@@ -133,6 +157,9 @@ _recompute_derived() {
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${GREEN}  Batch Experiment Runner${NC}"
+if $RESUME; then
+    echo -e "${GREEN}  Mode: RESUME (reusing incomplete folders, skipping done)${NC}"
+fi
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
 
@@ -288,7 +315,8 @@ for ds_row in "${DATASETS[@]}"; do
                             --prediction_source "$PREDICTION_SOURCE" \
                             --data_root "$DATA_ROOT" \
                             $emb_flags \
-                            $rag_flags || { echo -e "${RED}  Step 6a FAILED${NC}"; continue; }
+                            $rag_flags \
+                            --prompt_version "$PROMPT_VERSION" || { echo -e "${RED}  Step 6a FAILED${NC}"; continue; }
                     fi
                 fi
 
@@ -306,7 +334,8 @@ for ds_row in "${DATASETS[@]}"; do
                         --data_root "$DATA_ROOT" \
                         $ood_flag \
                         $emb_flags \
-                        $rag_flags || { echo -e "${RED}  Step 6 FAILED${NC}"; continue; }
+                        $rag_flags \
+                        --prompt_version "$PROMPT_VERSION" || { echo -e "${RED}  Step 6 FAILED${NC}"; continue; }
                 fi
 
                 # ── Steps 7+8: per model ─────────────────────────────
@@ -316,7 +345,7 @@ for ds_row in "${DATASETS[@]}"; do
                     # ── Build exp folder name ────────────────────────
                     base_name="$(_build_exp_dir_name "$UNSLOTH_MODEL")"
 
-                    # ── Skip if already completed ────────────────────
+                    # ── Skip / resume logic ──────────────────────────
                     latest_existing=""
                     v=1
                     while [[ -d "${EXP_DIR}/${base_name}_v$(printf '%02d' $v)" ]]; do
@@ -330,8 +359,14 @@ for ds_row in "${DATASETS[@]}"; do
                         continue
                     fi
 
-                    # ── Create new experiment folder ─────────────────
-                    EXP_RUN_DIR="${EXP_DIR}/${base_name}_v$(printf '%02d' $v)"
+                    if $RESUME && [[ -n "$latest_existing" ]]; then
+                        # Reuse the incomplete folder instead of creating a new version
+                        EXP_RUN_DIR="$latest_existing"
+                        echo -e "${YELLOW}  [$RUN_IDX/$TOTAL] RESUME (reusing incomplete ${latest_existing##*/})${NC}"
+                    else
+                        # Create new experiment folder
+                        EXP_RUN_DIR="${EXP_DIR}/${base_name}_v$(printf '%02d' $v)"
+                    fi
                     mkdir -p "$EXP_RUN_DIR"
 
                     git_hash=$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo "n/a")
