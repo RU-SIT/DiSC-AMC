@@ -197,7 +197,8 @@ def train(
         fp16=not torch.cuda.is_bf16_supported(),
         bf16=torch.cuda.is_bf16_supported(),
         logging_steps=10,
-        save_strategy="epoch",
+        save_strategy="steps" if has_eval else "epoch",
+        save_steps=50 if has_eval else None,
         save_total_limit=2,
         seed=seed,
         optim="adamw_8bit",
@@ -205,7 +206,7 @@ def train(
         report_to="none",       # set to "wandb" if you want W&B logging
         dataset_text_field="text",
         max_seq_length=max_seq_length,
-        packing=True,
+        packing=False,  # packing requires flash_attention_2 to avoid OOM and cross-batch contamination
         # ── Eval settings (active only when val_split > 0) ───────────
         eval_strategy="steps" if has_eval else "no",
         eval_steps=50 if has_eval else None,

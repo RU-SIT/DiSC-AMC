@@ -43,7 +43,7 @@ EXP_DIR="${PROJECT_ROOT}/exp"
 MODEL_DIR="/mnt/d/Rowan/discrete-llm-amc/models"
 
 # ─── Dataset ─────────────────────────────────────────────────────────────
-DATASET_FOLDER="unlabaled_10k"                    # folder name under DATA_ROOT
+DATASET_FOLDER="unlabeled_10k"                    # folder name under DATA_ROOT
 TRAIN_DATASET_FOLDER=""      # OOD: load train .pkl from this folder
                                           # set to "" to use DATASET_FOLDER for both
 
@@ -66,11 +66,12 @@ CENTROID_OUTPUT="${DATA_ROOT}/${TRAIN_DATASET_FOLDER:-$DATASET_FOLDER}/train/cla
 FAISS_INDEX_PATH="${DATA_ROOT}/${TRAIN_DATASET_FOLDER:-$DATASET_FOLDER}/train/faiss_knn"
 
 # ─── Feature type ───────────────────────────────────────────────────────
-USE_RAG=false               # true → build/use FAISS index for example selection
+USE_RAG=true               # true → build/use FAISS index for example selection
 RAG_K=10                    # number of nearest neighbours per test signal
-MIN_CLASSES=0
+MIN_CLASSES=$TOP_K          # min classes to allow RAG (otherwise fall back to top-K)
 FEATURE_TYPE="embeddings"        # stats | embeddings
-PROMPT_VERSION="v1"         # v1 (original) | v2 (source-aware)
+PROMPT_VERSION="v2"         # v1 (original) | v2 (source-aware)
+COMPLETION_VERSION=$PROMPT_VERSION       # v1 (generic reasoning) | v2 (feature-aware reasoning)
 N_COMPONENTS=10             # PCA components (only for embeddings)
 ENCODER_WEIGHTS="${EXP_DIR}/dino_classifier.pth"
 
@@ -103,14 +104,25 @@ MAX_SEQ_LEN=1024             # max sequence length
 WARMUP_STEPS=5               # warmup steps
 SEED=3407                    # random seed
 VAL_SPLIT=0.1                # fraction held out for validation (0.0 = none)
-COMPLETION_VERSION="v2"       # v1 (generic reasoning) | v2 (feature-aware reasoning)
 
 # ─── Output ─────────────────────────────────────────────────────────────
 SAVE_MERGED=false            # also save merged 16-bit model (large!)
+RUN_FINETUNE=false           # true → train new adapter (creates new version dir)
+                             # false → evaluate only (reuses latest existing version)
 
 # ─── Evaluation of finetuned model ──────────────────────────────────────
 PROMPT_TYPE="discret_prompts"  # discret_prompts | old_discret_prompts | prompts | old_prompts
 NUM_TRIES=1                    # number of inference attempts per prompt
+INFERENCE_BATCH_SIZE=8         # prompts per model.generate() call (higher = faster, more VRAM)
+MAX_NEW_TOKENS=512             # token budget per response (3000 is wasteful for classification)
+
+# ─── OOD evaluation — test the finetuned model on other datasets ─────────
+# Leave empty to skip OOD evaluation.  Each folder is used as the test set
+# while TRAIN_DATASET_FOLDER (or DATASET_FOLDER) remains the training source.
+OOD_TEST_FOLDERS=(             # e.g. ("-30dB" "-11_-15dB")
+    "-30dB"
+    # "-11_-15dB"
+)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # AUTOMATIC / DERIVED VARIABLES (Do not edit below this line)
@@ -144,7 +156,11 @@ if [[ "$USE_RAG" == "true" ]]; then
 fi
 
 # ─── Build experiment tag for train .pkl path ────────────────────────────
-# Mirrors src/naming.py ExperimentConfig.build_tag()
+# Mirrors src/naming.py ExperimentConfig.build_tag() EXCEPT for rag:
+# Python's build_train() uses the legacy train_pkl_name() interface which
+# does NOT accept use_rag, so the train pkl filename never contains a rag
+# tag.  The rag tag only appears in test pkl and eval result names, which
+# are handled by ExperimentConfig inside the Python evaluation code.
 _build_pkl_tag() {
     local parts=()
     if [[ "$PREDICTION_SOURCE" != "dnn" ]]; then
@@ -156,9 +172,8 @@ _build_pkl_tag() {
     if [[ "$FEATURE_TYPE" == "embeddings" && "$N_COMPONENTS" -gt 0 ]]; then
         parts+=("emb${N_COMPONENTS}")
     fi
-    if [[ "$USE_RAG" == "true" && "$RAG_K" -gt 0 ]]; then
-        parts+=("rag${RAG_K}")
-    fi
+    # NOTE: rag is intentionally excluded — Python never puts rag in the
+    # train pkl filename (build_train uses the legacy train_pkl_name call).
     local IFS="_"
     echo "${parts[*]}"
 }
@@ -170,9 +185,9 @@ else
     TRAIN_PKL_NAME="train_${NOISE_MODE}_${N_BINS}_${TOP_K}_data.pkl"
 fi
 
-# .pkl resides in the TRAIN folder (OOD or same as test)
+# .pkl resides directly in the dataset folder (no train/ subdir)
 TRAIN_PKL_DIR="${DATA_ROOT}/${TRAIN_DATASET_FOLDER:-$DATASET_FOLDER}"
-TRAIN_PKL_PATH="${TRAIN_PKL_DIR}/train/${TRAIN_PKL_NAME}"
+TRAIN_PKL_PATH="${TRAIN_PKL_DIR}/${TRAIN_PKL_NAME}"
 
 # ─── Shorten model name for folder naming ────────────────────────────────
 _shorten_model() {
@@ -490,8 +505,112 @@ main(
     data_root='${DATA_ROOT}',
     output_dir='${FT_OUTPUT_DIR}',
     adapter_path='${ADAPTER_DIR}',
+    inference_batch_size=${INFERENCE_BATCH_SIZE},
+    max_new_tokens=${MAX_NEW_TOKENS},
 )
 "
+}
+
+# ─── STEP E-OOD: Evaluate finetuned model on multiple OOD test sets ────
+# For each folder in OOD_TEST_FOLDERS this will:
+#   1. Generate the test pkl (skips if already present)
+#   2. Run inference with the finetuned adapter
+#   3. Print accuracy metrics
+# The ood_train_folder argument tells ExperimentConfig which dataset was used
+# for training so that output filenames follow the *_ood_* naming convention.
+step_evaluate_ood_all() {
+    if [[ ${#OOD_TEST_FOLDERS[@]} -eq 0 ]]; then
+        echo "  OOD_TEST_FOLDERS is empty — skipping OOD evaluation."
+        return 0
+    fi
+
+    # The folder that provided the training data (used as ood_train_folder in naming)
+    local train_src="${TRAIN_DATASET_FOLDER:-$DATASET_FOLDER}"
+
+    local emb_flags=""
+    if [[ "$FEATURE_TYPE" == "embeddings" ]]; then
+        emb_flags="--feature_type embeddings"
+        emb_flags+=" --encoder_weights $ENCODER_WEIGHTS"
+        emb_flags+=" --backbone $BACKBONE"
+        emb_flags+=" --n_components $N_COMPONENTS"
+        emb_flags+=" --batch_size $BATCH_SIZE"
+    fi
+
+    local rag_flags=""
+    if [[ "$USE_RAG" == "true" ]]; then
+        rag_flags="--use_rag --rag_k $RAG_K --min_classes $MIN_CLASSES"
+    fi
+
+    for test_folder in "${OOD_TEST_FOLDERS[@]}"; do
+        log_step "OOD EVAL — test=${test_folder}  train=${train_src}"
+        cd "$PROJECT_ROOT"
+
+        # ── 1. Generate test pkl ─────────────────────────────────────
+        echo "  Generating test pkl for ${test_folder} …"
+        python -m src.prompt.generated_dataset \
+            --mode test \
+            --dataset_folder="$test_folder" \
+            --noise_mode "$NOISE_MODE" \
+            --n_bins "$N_BINS" \
+            --top_k "$TOP_K" \
+            --prediction_source "$PREDICTION_SOURCE" \
+            --data_root "$DATA_ROOT" \
+            --train_dataset_folder="$train_src" \
+            $emb_flags \
+            $rag_flags \
+            --prompt_version "$PROMPT_VERSION"
+
+        # ── 2. Run inference ─────────────────────────────────────────
+        echo "  Running inference …"
+        python -c "
+from src.evaluation.unsloth_eval import main
+main(
+    dataset_folder='${test_folder}',
+    prompt_type='${PROMPT_TYPE}',
+    model_name='${UNSLOTH_MODEL}',
+    noise_mode='${NOISE_MODE}',
+    n_bins=${N_BINS},
+    top_k=${TOP_K},
+    num_tries=${NUM_TRIES},
+    prediction_source='${PREDICTION_SOURCE}',
+    feature_type='${FEATURE_TYPE}',
+    n_components=${N_COMPONENTS_EVAL},
+    ood_train_folder='${train_src}',
+    use_rag=${USE_RAG_PY},
+    rag_k=${RAG_K_EVAL},
+    cache_dir='${MODEL_DIR}',
+    data_root='${DATA_ROOT}',
+    output_dir='${FT_OUTPUT_DIR}',
+    adapter_path='${ADAPTER_DIR}',
+    inference_batch_size=${INFERENCE_BATCH_SIZE},
+    max_new_tokens=${MAX_NEW_TOKENS},
+)
+"
+
+        # ── 3. Print metrics ─────────────────────────────────────────
+        python -c "
+from src.evaluation.unsloth_eval import read_results, CLASS_NAMES
+from src.evaluation.utils import sort_results_by_prompt, get_unique_prompts, print_metrics
+results = read_results(
+    dataset_folder='${test_folder}',
+    prompt_type='${PROMPT_TYPE}',
+    model_name='${UNSLOTH_MODEL}',
+    noise_mode='${NOISE_MODE}',
+    n_bins=${N_BINS},
+    top_k=${TOP_K},
+    prediction_source='${PREDICTION_SOURCE}',
+    feature_type='${FEATURE_TYPE}',
+    n_components=${N_COMPONENTS_EVAL},
+    ood_train_folder='${train_src}',
+    use_rag=${USE_RAG_PY},
+    rag_k=${RAG_K_EVAL},
+    output_dir='${FT_OUTPUT_DIR}',
+)
+sorted_results = sort_results_by_prompt(results)
+print(f'[${test_folder}]  Unique prompts: {len(get_unique_prompts(results))}')
+print_metrics(sorted_results, CLASS_NAMES)
+"
+    done
 }
 
 # ─── STEP F: Compute metrics ────────────────────────────────────────────
@@ -527,10 +646,14 @@ print_metrics(sorted_results, CLASS_NAMES)
 # RUN — Comment out any step you don't need
 # ═══════════════════════════════════════════════════════════════════════════
 
-# ─── Choose ONE: ────────────────────────────────────────────────────────
-setup_ft_experiment           # ← Use for NEW finetuning runs
-# find_latest_ft_experiment   # ← Use to resume or evaluate an existing run
-# FT_OUTPUT_DIR="..."        # ← Or set manually to a specific folder path
+# ─── Auto-select experiment directory based on RUN_FINETUNE ────────────
+if [[ "$RUN_FINETUNE" == "true" ]]; then
+    setup_ft_experiment        # creates new versioned directory
+else
+    find_latest_ft_experiment  # reuses latest existing directory
+fi
+# Or override manually:
+# FT_OUTPUT_DIR="..."        # ← set to a specific folder path
 # ADAPTER_DIR="${FT_OUTPUT_DIR}/lora_adapter"
 
 echo ""
@@ -559,12 +682,15 @@ step_generate_train_pkl       # Generate train .pkl if not exists
 # step_preview_dataset        # Preview a few training samples (optional)
 
 # ─── Finetuning ─────────────────────────────────────────────────────────
-step_finetune                 # Run QLoRA finetuning
+[[ "$RUN_FINETUNE" == "true" ]] && step_finetune
 
 # ─── Evaluation (uses the same inference pipeline as run_pipeline) ──────
 # step_generate_test_pkl      # Uncomment if test .pkl not yet generated
-step_evaluate_finetuned       # Run inference with finetuned model
-step_metrics                  # Compute and print accuracy metrics
+# step_evaluate_finetuned       # Run inference with finetuned model
+# step_metrics                  # Compute and print accuracy metrics
+
+# ─── OOD evaluation — loop over OOD_TEST_FOLDERS ────────────────────────
+step_evaluate_ood_all         # Evaluate on each folder in OOD_TEST_FOLDERS
 
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
