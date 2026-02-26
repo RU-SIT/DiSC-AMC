@@ -225,6 +225,7 @@ def retrieve_examples(
     rag_k: int = 10,
     min_classes: int = 0,
     exclude_same_path: Optional[str] = None,
+    required_classes: Optional[List[str]] = None,
 ) -> Dict[str, List[Tuple[str, str]]]:
     """Retrieve the *rag_k* nearest training signals for one test query.
 
@@ -242,6 +243,11 @@ def retrieve_examples(
     exclude_same_path : str or None
         If provided, drop any retrieved signal whose path matches (useful
         when the test signal might also be in the training set).
+    required_classes : list[str] or None
+        If provided, guarantee that at least one example per class is
+        included in the result.  After the standard nearest-neighbour
+        retrieval, any class in *required_classes* that is still missing
+        gets its single closest training signal added.
 
     Returns
     -------
@@ -279,7 +285,67 @@ def retrieve_examples(
             if min_classes <= 0 or len(result) >= min_classes:
                 break
 
+    # ── Ensure required_classes coverage ──────────────────────────────
+    if required_classes:
+        missing = [c for c in required_classes if c not in result]
+        if missing:
+            _fill_missing_classes(retriever, q, missing, result, exclude_same_path)
+
     return result
+
+
+def _fill_missing_classes(
+    retriever: RAGRetriever,
+    query: np.ndarray,
+    missing_classes: List[str],
+    result: Dict[str, List[Tuple[str, str]]],
+    exclude_same_path: Optional[str] = None,
+) -> None:
+    """For each class in *missing_classes*, find its nearest training signal
+    to *query* and append it to *result* in-place.
+
+    This performs a brute-force scan restricted to each class's subset of
+    the index.  Because the number of missing classes is typically very
+    small (≤ top-k, e.g. 5), this is fast enough even without a per-class
+    sub-index.
+    """
+    labels_arr = np.array(retriever.labels)  # (N,)
+    vecs = retriever.feature_vectors          # (N, D) float32
+
+    for cls in missing_classes:
+        # Mask: rows belonging to this class
+        mask = labels_arr == cls
+        if not mask.any():
+            continue  # class not present in training set at all
+
+        cls_indices = np.where(mask)[0]
+        cls_vecs = np.ascontiguousarray(vecs[cls_indices])
+
+        # Compute L2 distances from query to this class's vectors
+        # query shape: (1, D),  cls_vecs shape: (M, D)
+        diffs = (cls_vecs - query).astype(np.float64)  # broadcasting (M, D)
+        dists = np.sum(diffs ** 2, axis=1)  # (M,)
+
+        # Pick the closest one
+        best_local = int(np.argmin(dists))
+        best_global = int(cls_indices[best_local])
+
+        path = retriever.signal_paths[best_global]
+        if exclude_same_path and os.path.abspath(path) == os.path.abspath(exclude_same_path):
+            # Try next-closest if the best is excluded
+            order = np.argsort(dists)
+            for j in order[1:]:
+                alt_global = int(cls_indices[j])
+                alt_path = retriever.signal_paths[alt_global]
+                if not (exclude_same_path and os.path.abspath(alt_path) == os.path.abspath(exclude_same_path)):
+                    path = alt_path
+                    best_global = alt_global
+                    break
+            else:
+                continue  # all samples of this class are excluded
+
+        snr = retriever.snrs[best_global]
+        result[cls] = [(path, snr)]
 
 
 def rag_example_dict_from_paths(
@@ -308,7 +374,9 @@ def retrieve_example_dict_for_signal(
     retriever: RAGRetriever,
     query_feature_vector: np.ndarray,
     rag_k: int = 10,
+    min_classes: int = 0,
     signal_path: Optional[str] = None,
+    required_classes: Optional[List[str]] = None,
 ) -> Dict[str, List[Tuple[np.ndarray, str]]]:
     """End-to-end: retrieve + load signals -> ``example_dict``.
 
@@ -323,6 +391,10 @@ def retrieve_example_dict_for_signal(
     signal_path : str or None
         Path of the current test signal (excluded from results to avoid
         self-retrieval).
+    required_classes : list[str] or None
+        If provided, guarantee at least one example per class.  Classes
+        not covered by the initial kNN search get their single closest
+        training signal added.
 
     Returns
     -------
@@ -334,6 +406,8 @@ def retrieve_example_dict_for_signal(
         retriever,
         query_feature_vector,
         rag_k=rag_k,
+        min_classes=min_classes,
         exclude_same_path=signal_path,
+        required_classes=required_classes,
     )
     return rag_example_dict_from_paths(retrieved_paths)

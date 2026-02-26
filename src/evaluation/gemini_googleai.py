@@ -50,7 +50,8 @@ def main(dataset_folder='unlabeled_10k', prompt_type='discret_prompts',
          model_name="gemini-2.5-flash", noise_mode='noisySignal',
          n_bins=10, top_k=5, num_tries=3, prediction_source='dnn',
          feature_type='stats', n_components=0,
-         ood_train_folder='', use_rag=False, rag_k=0):
+         ood_train_folder='', use_rag=False, rag_k=0,
+         output_dir='.'):
     cfg = ExperimentConfig(
         dataset_folder=dataset_folder,
         prediction_source=prediction_source,
@@ -64,7 +65,7 @@ def main(dataset_folder='unlabeled_10k', prompt_type='discret_prompts',
         rag_k=rag_k,
     )
     results = []
-    filepath = _output_path(cfg, prompt_type, model_name)
+    filepath = os.path.join(output_dir, _output_path(cfg, prompt_type, model_name))
 
     try:
         data, _, _ = load_data(f'../../data/own/{dataset_folder}', noise_mode, n_bins, top_k,
@@ -105,7 +106,8 @@ def read_results(dataset_folder='unlabeled_10k', prompt_type='discret_prompts',
                  model_name='gemini-2.5-flash', noise_mode='noisySignal',
                  n_bins=5, top_k=5, prediction_source='dnn',
                  feature_type='stats', n_components=0,
-                 ood_train_folder='', use_rag=False, rag_k=0):
+                 ood_train_folder='', use_rag=False, rag_k=0,
+                 output_dir='.'):
     """Read and optionally clean results."""
     import json
     cfg = ExperimentConfig(
@@ -120,7 +122,7 @@ def read_results(dataset_folder='unlabeled_10k', prompt_type='discret_prompts',
         use_rag=use_rag,
         rag_k=rag_k,
     )
-    filepath = _output_path(cfg, prompt_type, model_name)
+    filepath = os.path.join(output_dir, _output_path(cfg, prompt_type, model_name))
     with open(filepath, 'r') as f:
         results = json.load(f)
     if model_name == "gemini-2.5-flash":

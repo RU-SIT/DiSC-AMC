@@ -1,7 +1,7 @@
 """
 Inference & evaluation utilities for trained classifiers.
 
-Provides three capabilities that were previously ad-hoc cells in
+Provides four capabilities that were previously ad-hoc cells in
 ``classify.py``:
 
 1. **Test-set evaluation** with both classifier-head accuracy and
@@ -10,6 +10,8 @@ Provides three capabilities that were previously ad-hoc cells in
    (``predict_topk_classifier``).
 3. **Per-image top-k predictions** using centroid distances
    (``predict_topk_centroids``).
+4. **Per-image top-k predictions** using FAISS kNN voting
+   (``predict_topk_faiss``).
 
 All functions are parameterised so they work with any backbone supported
 by :class:`classifier_training.ImageClassifier`.
@@ -292,6 +294,284 @@ def predict_topk_centroids(
     return predictions
 
 
+# ── Per-image predictions (FAISS kNN voting) ─────────────────────────────────
+
+
+def build_faiss_index(
+    model: ImageClassifier,
+    device: torch.device,
+    train_dataset_path: str,
+    classes: List[str] = CLASSES,
+    transform: transforms.Compose = _DEFAULT_TRANSFORM,
+    output_path: Optional[str] = None,
+    use_ivf: bool = False,
+    nlist: int = 100,
+) -> None:
+    """Build a FAISS index from the encoder features of training images.
+
+    The index is stored alongside its metadata (image paths and labels)
+    so that it can be loaded later by :func:`predict_topk_faiss`.
+
+    Parameters
+    ----------
+    model
+        Trained :class:`ImageClassifier` (already on *device*, eval mode).
+    device
+        Torch device.
+    train_dataset_path
+        Path containing ``noisyImg/`` and ``noiseLessImg/`` sub-directories
+        with training images.
+    classes
+        Ordered class names matching label indices.
+    transform
+        Image transform pipeline.
+    output_path
+        Where to save the FAISS index + metadata.  Two files are created:
+        ``<output_path>.index`` and ``<output_path>.meta.pkl``.
+        If None, defaults to ``<train_dataset_path>/faiss_knn``.
+    use_ivf
+        Use ``IndexIVFFlat`` for approximate search (faster for large sets).
+    nlist
+        Number of Voronoi cells for IVF (ignored when ``use_ivf=False``).
+    """
+    import pickle
+
+    try:
+        import faiss
+    except ImportError:
+        raise ImportError(
+            "FAISS prediction source requires the `faiss` package.\n"
+            "Install it with:  pip install faiss-cpu   (or faiss-gpu)"
+        )
+
+    noiseless_dir = os.path.join(train_dataset_path, "noiseLessImg")
+    noisy_dir = os.path.join(train_dataset_path, "noisyImg")
+
+    image_paths: List[str] = []
+    for d in (noiseless_dir, noisy_dir):
+        if os.path.isdir(d):
+            image_paths.extend(sorted(glob(os.path.join(d, "*.png"))))
+
+    if not image_paths:
+        raise FileNotFoundError(
+            f"No .png images found in {train_dataset_path}/noisyImg or noiseLessImg"
+        )
+
+    if output_path is None:
+        output_path = os.path.join(train_dataset_path, "faiss_knn")
+
+    # Extract features for all training images
+    all_features: List[np.ndarray] = []
+    all_labels: List[str] = []
+    all_img_types: List[str] = []
+
+    model.eval()
+    with torch.no_grad():
+        for img_path in tqdm(image_paths, desc="Building FAISS index (extracting features)"):
+            image = Image.open(img_path).convert("RGB")
+            tensor = transform(image).unsqueeze(0).to(device)
+
+            features = model.encoder(tensor)  # (1, latent_dim)
+            if model.backbone_type == "resnet":
+                features = torch.flatten(model.pool(features), 1)
+
+            feat_np = features.cpu().numpy().flatten()
+            all_features.append(feat_np)
+
+            # Extract class label from filename (e.g. "4ASK_-5.57dB__076_...png")
+            fname = os.path.basename(img_path)
+            label = fname.split("_")[0]
+            img_type = os.path.basename(os.path.dirname(img_path))
+            all_labels.append(label)
+            all_img_types.append(img_type)
+
+    vecs = np.array(all_features, dtype=np.float32)
+    d = vecs.shape[1]
+
+    # Build the FAISS index
+    if use_ivf and vecs.shape[0] > nlist:
+        quantiser = faiss.IndexFlatL2(d)
+        index = faiss.IndexIVFFlat(quantiser, d, min(nlist, vecs.shape[0]))
+        index.train(vecs)
+        index.add(vecs)
+        index.nprobe = min(10, nlist)
+    else:
+        index = faiss.IndexFlatL2(d)
+        index.add(vecs)
+
+    # Save index and metadata
+    idx_file = output_path + ".index"
+    meta_file = output_path + ".meta.pkl"
+    os.makedirs(os.path.dirname(os.path.abspath(idx_file)), exist_ok=True)
+
+    faiss.write_index(index, idx_file)
+    with open(meta_file, "wb") as f:
+        pickle.dump({
+            "image_paths": image_paths,
+            "labels": all_labels,
+            "img_types": all_img_types,
+        }, f)
+
+    print(f"FAISS index built: {index.ntotal} vectors, dim={d}")
+    print(f"  Index  → {idx_file}")
+    print(f"  Meta   → {meta_file}")
+
+
+def predict_topk_faiss(
+    model: ImageClassifier,
+    device: torch.device,
+    dataset_path: str,
+    faiss_index_path: str,
+    classes: List[str] = CLASSES,
+    topk: int = 5,
+    knn_k: int = 50,
+    fill_topk: bool = False,
+    transform: transforms.Compose = _DEFAULT_TRANSFORM,
+    output_path: Optional[str] = None,
+) -> Dict[str, Dict[str, List[str]]]:
+    """Run per-image top-k predictions using FAISS kNN voting.
+
+    For each image, extracts the encoder feature vector, queries the FAISS
+    index for the ``knn_k`` nearest training neighbours, and returns the
+    ``topk`` classes with the most votes (weighted by inverse distance).
+
+    Parameters
+    ----------
+    model
+        Trained :class:`ImageClassifier` (already on *device*, eval mode).
+    device
+        Torch device.
+    dataset_path
+        Test dataset path with ``noisyImg/`` and ``noiseLessImg/`` sub-dirs.
+    faiss_index_path
+        Base path to the FAISS index files (without ``.index`` / ``.meta.pkl``)
+        as created by :func:`build_faiss_index`.
+    classes
+        Ordered class names.
+    topk
+        Number of top predicted classes to return.
+    knn_k
+        Number of nearest neighbours to retrieve from the FAISS index
+        for voting.  Should be >= ``topk``.
+    fill_topk
+        If True and kNN voting produces fewer than ``topk`` distinct
+        classes, brute-force scan the index for the closest training
+        sample from each missing class and add it.  This guarantees
+        the output always has exactly ``topk`` classes per image.
+    transform
+        Image transform pipeline.
+    output_path
+        If given, save predictions JSON here.
+
+    Returns
+    -------
+    dict
+        ``{filename: {image_type: [class1, class2, …]}}``
+    """
+    import pickle
+    from collections import Counter
+
+    try:
+        import faiss
+    except ImportError:
+        raise ImportError(
+            "FAISS prediction source requires the `faiss` package.\n"
+            "Install it with:  pip install faiss-cpu   (or faiss-gpu)"
+        )
+
+    idx_file = faiss_index_path + ".index"
+    meta_file = faiss_index_path + ".meta.pkl"
+
+    if not os.path.isfile(idx_file):
+        raise FileNotFoundError(
+            f"FAISS index not found: {idx_file}\n"
+            "Run with 'build_faiss_index' on the training set first."
+        )
+    if not os.path.isfile(meta_file):
+        raise FileNotFoundError(f"FAISS metadata not found: {meta_file}")
+
+    index = faiss.read_index(idx_file)
+    with open(meta_file, "rb") as f:
+        meta = pickle.load(f)
+
+    train_labels = meta["labels"]
+    print(f"FAISS index loaded: {index.ntotal} vectors (knn_k={knn_k})")
+
+    # Gather test images
+    noiseless_dir = os.path.join(dataset_path, "noiseLessImg")
+    noisy_dir = os.path.join(dataset_path, "noisyImg")
+
+    image_paths: List[str] = []
+    for d in (noiseless_dir, noisy_dir):
+        if os.path.isdir(d):
+            image_paths.extend(sorted(glob(os.path.join(d, "*.png"))))
+
+    predictions: Dict[str, Dict[str, List[str]]] = {}
+
+    model.eval()
+    with torch.no_grad():
+        for img_path in tqdm(image_paths, desc="Predicting (FAISS kNN)"):
+            image = Image.open(img_path).convert("RGB")
+            tensor = transform(image).unsqueeze(0).to(device)
+
+            features = model.encoder(tensor)  # (1, latent_dim)
+            if model.backbone_type == "resnet":
+                features = torch.flatten(model.pool(features), 1)
+
+            q = features.cpu().numpy().astype(np.float32)
+            actual_k = min(knn_k, index.ntotal)
+            distances, indices = index.search(q, actual_k)
+            distances = distances[0]
+            indices = indices[0]
+
+            # Weighted voting: inverse-distance weighting
+            # Add small epsilon to avoid division by zero
+            eps = 1e-8
+            weights = 1.0 / (distances + eps)
+
+            label_scores: Dict[str, float] = {}
+            for idx_val, w in zip(indices, weights):
+                if idx_val < 0:
+                    continue
+                lbl = train_labels[idx_val]
+                label_scores[lbl] = label_scores.get(lbl, 0.0) + w
+
+            # Sort by score descending, take top-k
+            sorted_labels = sorted(label_scores.items(), key=lambda x: x[1], reverse=True)
+            pred_classes = [lbl for lbl, _ in sorted_labels[:min(topk, len(sorted_labels))]]
+
+            # Pad to topk if fill_topk is enabled and we have fewer classes
+            if fill_topk and len(pred_classes) < topk:
+                covered = set(pred_classes)
+                missing = [c for c in classes if c not in covered]
+                for cls in missing:
+                    if len(pred_classes) >= topk:
+                        break
+                    # Find indices of training samples belonging to this class
+                    cls_indices = [j for j, lbl in enumerate(train_labels) if lbl == cls]
+                    if not cls_indices:
+                        continue
+                    # Reconstruct vectors for this class and find closest to query
+                    cls_vecs = np.array(
+                        [index.reconstruct(j) for j in cls_indices],
+                        dtype=np.float32,
+                    )
+                    dists_cls = np.sum((cls_vecs - q) ** 2, axis=1)
+                    pred_classes.append(cls)
+
+            img_type = os.path.basename(os.path.dirname(img_path))
+            fname = os.path.basename(img_path)
+            predictions.setdefault(fname, {})[img_type] = pred_classes
+
+    if output_path is not None:
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        with open(output_path, "w") as f:
+            json.dump(predictions, f, indent=4)
+        print(f"Top-{topk} FAISS kNN predictions saved → {output_path}")
+
+    return predictions
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -318,9 +598,30 @@ if __name__ == "__main__":
     pred_p.add_argument("--weights", type=str, required=True)
     pred_p.add_argument("--dataset_path", type=str, required=True, help="Path with noisyImg/ & noiseLessImg/.")
     pred_p.add_argument("--centroid_path", type=str, default=None, help="If given, use centroids instead of classifier head.")
+    pred_p.add_argument("--faiss_index_path", type=str, default=None,
+                        help="Base path to FAISS index (without .index/.meta.pkl). "
+                             "If given, use FAISS kNN voting instead of classifier head.")
+    pred_p.add_argument("--knn_k", type=int, default=50,
+                        help="Number of nearest neighbours for FAISS kNN voting (default: 50).")
+    pred_p.add_argument("--fill_topk", action="store_true", default=False,
+                        help="Pad FAISS predictions to always have topk distinct classes "
+                             "by brute-force filling from under-represented classes.")
     pred_p.add_argument("--topk", type=int, default=5)
     pred_p.add_argument("--output", type=str, required=True, help="Output JSON path.")
     pred_p.add_argument("--image_size", type=int, default=96)
+
+    # --- build_faiss ---
+    faiss_p = sub.add_parser("build_faiss", help="Build FAISS index from training images.")
+    faiss_p.add_argument("--backbone", type=str, default="dino", choices=["dino", "resnet"])
+    faiss_p.add_argument("--weights", type=str, required=True)
+    faiss_p.add_argument("--train_path", type=str, required=True,
+                         help="Training dataset path with noisyImg/ & noiseLessImg/.")
+    faiss_p.add_argument("--output", type=str, default=None,
+                         help="Base output path for index files (default: <train_path>/faiss_knn).")
+    faiss_p.add_argument("--image_size", type=int, default=96)
+    faiss_p.add_argument("--use_ivf", action="store_true", default=False,
+                         help="Use IVF approximate search (faster for large datasets).")
+    faiss_p.add_argument("--nlist", type=int, default=100, help="IVF cells (default: 100).")
 
     args = parser.parse_args()
 
@@ -346,7 +647,18 @@ if __name__ == "__main__":
         )
 
     elif args.command == "predict":
-        if args.centroid_path:
+        if args.faiss_index_path:
+            predict_topk_faiss(
+                model, device,
+                dataset_path=args.dataset_path,
+                faiss_index_path=args.faiss_index_path,
+                topk=args.topk,
+                knn_k=args.knn_k,
+                fill_topk=args.fill_topk,
+                transform=t,
+                output_path=args.output,
+            )
+        elif args.centroid_path:
             predict_topk_centroids(
                 model, device,
                 dataset_path=args.dataset_path,
@@ -363,3 +675,13 @@ if __name__ == "__main__":
                 transform=t,
                 output_path=args.output,
             )
+
+    elif args.command == "build_faiss":
+        build_faiss_index(
+            model, device,
+            train_dataset_path=args.train_path,
+            transform=t,
+            output_path=args.output,
+            use_ivf=args.use_ivf,
+            nlist=args.nlist,
+        )

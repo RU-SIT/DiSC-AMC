@@ -37,8 +37,8 @@ EXP_DIR="${PROJECT_ROOT}/exp"
 MODEL_DIR="/mnt/d/Rowan/discrete-llm-amc/models"
 
 # ─── Dataset ─────────────────────────────────────────────────────────────
-DATASET_FOLDER="unlabeled_10k"                # folder name under DATA_ROOT
-TRAIN_DATASET_FOLDER=""      # OOD: load train .pkl from this folder
+DATASET_FOLDER="-30dB"                # folder name under DATA_ROOT
+TRAIN_DATASET_FOLDER="unlabaled_10k"      # OOD: load train .pkl from this folder
                                           # set to "" to use DATASET_FOLDER for both
 
 # ─── Model / backbone ───────────────────────────────────────────────────
@@ -59,16 +59,19 @@ FREEZE_ENCODER=false        # true → add --freeze_encoder flag
 FIND_CLOSEST=true           # true → also print closest sample per class
 
 # ─── Prediction & discretisation (Steps 4-6) ────────────────────────────
-PREDICTION_SOURCE="centroid" # dnn | centroid | rf  (defined in src/naming.py)
+PREDICTION_SOURCE="centroid" # dnn | centroid | rf | faiss  (defined in src/naming.py)
 TOP_K=5
 NOISE_MODE="noisySignal"     # noisySignal | noiselessSignal
 N_BINS=5
+KNN_K=50                     # kNN neighbours for FAISS voting (only when faiss)
 
 # ─── Feature type (Step 6) ──────────────────────────────────────────────
 # RAG (Retrieval-Augmented Generation) — optional
 USE_RAG=true                # true → build/use FAISS index for example selection
 RAG_K=10                     # number of nearest neighbours per test signal
-FEATURE_TYPE="embeddings"         # stats | embeddings
+MIN_CLASSES=0                # min distinct classes in RAG results (0 = no constraint)
+FEATURE_TYPE="stats"         # stats | embeddings
+PROMPT_VERSION="v1"          # v1 (original) | v2 (source-aware with shortlisting/feature context)
 # If FEATURE_TYPE="embeddings", set these:
 N_COMPONENTS=10              # PCA components to keep
 ENCODER_WEIGHTS="${EXP_DIR}/dino_classifier.pth"
@@ -96,6 +99,12 @@ if [[ -n "$TRAIN_DATASET_FOLDER" && "$TRAIN_DATASET_FOLDER" != "$DATASET_FOLDER"
     log_step "OOD mode: reusing train centroids from ${TRAIN_DATASET_FOLDER}"
 fi
 
+# FAISS index path (for PREDICTION_SOURCE=faiss)
+FAISS_INDEX_PATH="${DATASET_PATH}/train/faiss_knn"
+if [[ -n "$TRAIN_DATASET_FOLDER" && "$TRAIN_DATASET_FOLDER" != "$DATASET_FOLDER" ]]; then
+    FAISS_INDEX_PATH="${DATA_ROOT}/${TRAIN_DATASET_FOLDER}/train/faiss_knn"
+fi
+
 # Derived filenames
 RAW_JSON="top${TOP_K}_${PREDICTION_SOURCE}_predictions.json"
 CONVERTED_JSON="ntop${TOP_K}_${PREDICTION_SOURCE}_predictions.json"
@@ -117,6 +126,160 @@ if [[ "$USE_RAG" == "true" ]]; then
     USE_RAG_PY="True"
     RAG_K_EVAL=$RAG_K
 fi
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Experiment management
+# ═══════════════════════════════════════════════════════════════════════════
+
+_shorten_prompt_type() {
+    case "$1" in
+        discret_prompts)      echo "disc" ;;
+        old_discret_prompts)  echo "old_disc" ;;
+        prompts)              echo "cont" ;;
+        old_prompts)          echo "old_cont" ;;
+        *)                    echo "$1" ;;
+    esac
+}
+
+_shorten_model() {
+    # Strip provider prefix and keep recognisable short name
+    local m="$1"
+    m="${m#unsloth/}"        # strip unsloth/
+    m="${m%%-unsloth*}"      # strip -unsloth-bnb-4bit etc.
+    echo "$m"
+}
+
+# Build the experiment folder base name (without version suffix).
+# Sets _EXP_BASE_NAME for use by setup/find functions.
+_build_exp_base_name() {
+    local provider="${EXP_PROVIDER:-unknown}"
+    local model_short
+    case "$provider" in
+        gemini)   model_short="$(_shorten_model "$GEMINI_MODEL")" ;;
+        openai)   model_short="$(_shorten_model "$OPENAI_MODEL")" ;;
+        unsloth)  model_short="$(_shorten_model "$UNSLOTH_MODEL")" ;;
+        *)        model_short="unknown" ;;
+    esac
+
+    local feat_tag=""
+    if [[ "$PREDICTION_SOURCE" != "dnn" ]]; then
+        feat_tag+="${PREDICTION_SOURCE}"
+    fi
+    if [[ -n "$OOD_TRAIN_FOLDER" ]]; then
+        [[ -n "$feat_tag" ]] && feat_tag+="_"
+        feat_tag+="ood"
+    fi
+    if [[ "$FEATURE_TYPE" == "embeddings" && "$N_COMPONENTS" -gt 0 ]]; then
+        [[ -n "$feat_tag" ]] && feat_tag+="_"
+        feat_tag+="emb${N_COMPONENTS}"
+    fi
+    if [[ "$USE_RAG" == "true" && "$RAG_K" -gt 0 ]]; then
+        [[ -n "$feat_tag" ]] && feat_tag+="_"
+        feat_tag+="rag${RAG_K}"
+    fi
+
+    local prompt_short
+    prompt_short="$(_shorten_prompt_type "$PROMPT_TYPE")"
+
+    _EXP_BASE_NAME="${DATASET_FOLDER}"
+    [[ -n "$feat_tag" ]] && _EXP_BASE_NAME+="_${feat_tag}"
+    _EXP_BASE_NAME+="_${prompt_short}_${provider}_${model_short}"
+}
+
+# ─── Create a NEW experiment folder (for step 7 / writing) ──────────────
+setup_experiment() {
+    _build_exp_base_name
+
+    # Auto-increment version suffix
+    local version=1
+    while [[ -d "${EXP_DIR}/${_EXP_BASE_NAME}_v$(printf '%02d' $version)" ]]; do
+        version=$((version + 1))
+    done
+    local exp_name="${_EXP_BASE_NAME}_v$(printf '%02d' $version)"
+
+    EXP_RUN_DIR="${EXP_DIR}/${exp_name}"
+    mkdir -p "$EXP_RUN_DIR"
+    echo -e "${GREEN}  NEW experiment: ${EXP_RUN_DIR}${NC}"
+
+    # ── Write config.json ────────────────────────────────────────────────
+    local provider="${EXP_PROVIDER:-unknown}"
+    local git_hash=""
+    git_hash=$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo "n/a")
+
+    cat > "${EXP_RUN_DIR}/config.json" <<EOCFG
+{
+  "experiment_id": "${exp_name}",
+  "timestamp": "$(date -Iseconds)",
+  "git_hash": "${git_hash}",
+  "dataset": {
+    "dataset_folder": "${DATASET_FOLDER}",
+    "train_dataset_folder": "${TRAIN_DATASET_FOLDER}",
+    "data_root": "${DATA_ROOT}",
+    "noise_mode": "${NOISE_MODE}"
+  },
+  "model": {
+    "backbone": "${BACKBONE}",
+    "prediction_source": "${PREDICTION_SOURCE}",
+    "top_k": ${TOP_K},
+    "knn_k": ${KNN_K}
+  },
+  "features": {
+    "feature_type": "${FEATURE_TYPE}",
+    "n_components": ${N_COMPONENTS},
+    "n_bins": ${N_BINS}
+  },
+  "rag": {
+    "use_rag": ${USE_RAG},
+    "rag_k": ${RAG_K}
+  },
+  "evaluation": {
+    "prompt_type": "${PROMPT_TYPE}",
+    "num_tries": ${NUM_TRIES},
+    "provider": "${provider}",
+    "llm_model": "$(_shorten_model "$(case $provider in gemini) echo $GEMINI_MODEL;; openai) echo $OPENAI_MODEL;; unsloth) echo $UNSLOTH_MODEL;; esac)")",
+    "llm_model_full": "$(case $provider in gemini) echo $GEMINI_MODEL;; openai) echo $OPENAI_MODEL;; unsloth) echo $UNSLOTH_MODEL;; esac)"
+  },
+  "paths": {
+    "project_root": "${PROJECT_ROOT}",
+    "exp_dir": "${EXP_DIR}",
+    "encoder_weights": "${ENCODER_WEIGHTS}",
+    "classifier_path": "${CLASSIFIER_PATH}"
+  }
+}
+EOCFG
+    echo "  config.json written."
+
+    # ── Start logging (tee to both terminal and log file) ────────────────
+    EXP_LOG="${EXP_RUN_DIR}/pipeline.log"
+    exec > >(tee -a "$EXP_LOG") 2>&1
+    echo "═══ Pipeline log started at $(date -Iseconds) ═══"
+}
+
+# ─── Find the LATEST existing experiment folder (for step 8 / reading) ──
+find_latest_experiment() {
+    _build_exp_base_name
+
+    # Find highest version that exists
+    local latest=""
+    local version=1
+    while [[ -d "${EXP_DIR}/${_EXP_BASE_NAME}_v$(printf '%02d' $version)" ]]; do
+        latest="${EXP_DIR}/${_EXP_BASE_NAME}_v$(printf '%02d' $version)"
+        version=$((version + 1))
+    done
+
+    if [[ -z "$latest" ]]; then
+        echo "ERROR: No existing experiment folder found for ${_EXP_BASE_NAME}_v*" >&2
+        exit 1
+    fi
+
+    EXP_RUN_DIR="$latest"
+    echo -e "${GREEN}  Using existing experiment: ${EXP_RUN_DIR}${NC}"
+
+    # Append to existing log
+    EXP_LOG="${EXP_RUN_DIR}/pipeline.log"
+    exec > >(tee -a "$EXP_LOG") 2>&1
+    echo "═══ Pipeline log resumed at $(date -Iseconds) ═══"
+}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Step functions
@@ -159,6 +322,17 @@ step3_compute_centroids() {
         $closest_flag
 }
 
+step3b_build_faiss_index() {
+    log_step "STEP 3b — Build FAISS index for kNN prediction"
+    cd "$PROJECT_ROOT"
+    python -m src.representation_learning.inference build_faiss \
+        --backbone "$BACKBONE" \
+        --weights "$CLASSIFIER_PATH" \
+        --train_path "${DATASET_PATH}/train" \
+        --output "$FAISS_INDEX_PATH" \
+        --image_size "$IMAGE_SIZE"
+}
+
 step4a_evaluate_test() {
     log_step "STEP 4a — Evaluate on test set (accuracy report)"
     cd "$PROJECT_ROOT"
@@ -176,9 +350,13 @@ step4b_predict_topk() {
     log_step "STEP 4b — Top-k predictions (${PREDICTION_SOURCE})"
     cd "$PROJECT_ROOT"
 
-    local centroid_flag=""
+    local extra_flags=""
     if [[ "$PREDICTION_SOURCE" == "centroid" ]]; then
-        centroid_flag="--centroid_path $CENTROID_OUTPUT"
+        extra_flags="--centroid_path $CENTROID_OUTPUT"
+    elif [[ "$PREDICTION_SOURCE" == "faiss" ]]; then
+        extra_flags="--faiss_index_path $FAISS_INDEX_PATH --knn_k $KNN_K"
+    elif [[ "$PREDICTION_SOURCE" == "faiss_filled" ]]; then
+        extra_flags="--faiss_index_path $FAISS_INDEX_PATH --knn_k $KNN_K --fill_topk"
     fi
 
     python -m src.representation_learning.inference predict \
@@ -188,7 +366,7 @@ step4b_predict_topk() {
         --topk "$TOP_K" \
         --output "${DATASET_PATH}/${RAW_JSON}" \
         --image_size "$IMAGE_SIZE" \
-        $centroid_flag
+        $extra_flags
 
     echo "  → Saved ${RAW_JSON}"
 }
@@ -220,7 +398,7 @@ step6_generate_datasets() {
       # RAG flags (optional)
     local rag_flags=""
     if [[ "$USE_RAG" == "true" ]]; then
-        rag_flags="--use_rag --rag_k $RAG_K"
+        rag_flags="--use_rag --rag_k $RAG_K --min_classes $MIN_CLASSES"
     fi
 
     # OOD flag: when TRAIN_DATASET_FOLDER is set and differs from
@@ -245,7 +423,8 @@ step6_generate_datasets() {
             --prediction_source "$PREDICTION_SOURCE" \
             --data_root "$DATA_ROOT" \
             $emb_flags \
-            $rag_flags
+            $rag_flags \
+            --prompt_version "$PROMPT_VERSION"
     fi
 
     echo "  6b. Building TEST data (feature_type=${FEATURE_TYPE}) …"
@@ -259,7 +438,8 @@ step6_generate_datasets() {
         --data_root "$DATA_ROOT" \
         $ood_flag \
         $emb_flags \
-        $rag_flags
+        $rag_flags \
+        --prompt_version "$PROMPT_VERSION"
 }
 
 step7_query_gemini() {
@@ -281,6 +461,7 @@ main(
     ood_train_folder='${OOD_TRAIN_FOLDER}',
     use_rag=${USE_RAG_PY},
     rag_k=${RAG_K_EVAL},
+    output_dir='${EXP_RUN_DIR}',
 )
 "
 }
@@ -304,6 +485,7 @@ main(
     ood_train_folder='${OOD_TRAIN_FOLDER}',
     use_rag=${USE_RAG_PY},
     rag_k=${RAG_K_EVAL},
+    output_dir='${EXP_RUN_DIR}',
 )
 "
 }
@@ -329,6 +511,7 @@ main(
     rag_k=${RAG_K_EVAL},
     cache_dir='${MODEL_DIR}',
     data_root='${DATA_ROOT}',
+    output_dir='${EXP_RUN_DIR}',
 )
 "
 }
@@ -353,6 +536,7 @@ results = read_results(
     ood_train_folder='${OOD_TRAIN_FOLDER}',
     use_rag=${USE_RAG_PY},
     rag_k=${RAG_K_EVAL},
+    output_dir='${EXP_RUN_DIR}',
 )
 sorted_results = sort_results_by_prompt(results)
 print(f'Unique prompts: {len(get_unique_prompts(results))}')
@@ -380,6 +564,7 @@ results = read_results(
     ood_train_folder='${OOD_TRAIN_FOLDER}',
     use_rag=${USE_RAG_PY},
     rag_k=${RAG_K_EVAL},
+    output_dir='${EXP_RUN_DIR}',
 )
 sorted_results = sort_results_by_prompt(results)
 print(f'Unique prompts: {len(get_unique_prompts(results))}')
@@ -407,6 +592,7 @@ results = read_results(
     ood_train_folder='${OOD_TRAIN_FOLDER}',
     use_rag=${USE_RAG_PY},
     rag_k=${RAG_K_EVAL},
+    output_dir='${EXP_RUN_DIR}',
 )
 sorted_results = sort_results_by_prompt(results)
 print(f'Unique prompts: {len(get_unique_prompts(results))}')
@@ -418,8 +604,22 @@ print_metrics(sorted_results, CLASS_NAMES)
 # ═══════════════════════════════════════════════════════════════════════════
 # RUN — Comment out any step you don't need
 # ═══════════════════════════════════════════════════════════════════════════
+
+# ─── Set the provider BEFORE calling setup/find ─────────────────────────
+# Uncomment exactly ONE of the following:
+# EXP_PROVIDER="gemini"
+# EXP_PROVIDER="openai"
+EXP_PROVIDER="unsloth"
+
+# ─── Choose ONE: ────────────────────────────────────────────────────────
+setup_experiment              # ← Use for NEW runs (step 7): creates exp/ folder
+# find_latest_experiment      # ← Use for READ-ONLY (step 8): reuses latest folder
+# EXP_RUN_DIR="..."          # ← Or set manually to a specific folder path
+
 echo "DATA_ROOT=$DATA_ROOT"
 echo "BACKBONE=$BACKBONE"
+echo "PREDICTION_SOURCE=$PREDICTION_SOURCE"
+echo "TOP_K=$TOP_K"
 echo "USE_RAG=$USE_RAG"
 echo "RAG_K=$RAG_K"
 echo "FEATURE_TYPE=$FEATURE_TYPE"
@@ -429,25 +629,29 @@ echo "PROJECT_ROOT=$PROJECT_ROOT"
 echo "DATASET_FOLDER=$DATASET_FOLDER"
 echo "DATASET_PATH=$DATASET_PATH"
 echo "CENTROID_OUTPUT=$CENTROID_OUTPUT"
+echo "FAISS_INDEX_PATH=$FAISS_INDEX_PATH"
+echo "KNN_K=$KNN_K"
+echo "EXP_RUN_DIR=$EXP_RUN_DIR"
 
 # step2_train_classifier
 # step3_compute_centroids
+# step3b_build_faiss_index   # only needed for PREDICTION_SOURCE=faiss
 # step4a_evaluate_test
-# step4b_predict_topk
-# step5_convert_keys
+step4b_predict_topk
+step5_convert_keys
 step6_generate_datasets
 
 # Uncomment the provider(s) you want to run:
 # step7_query_gemini
 # step7_query_openai
-# step7_query_unsloth
+step7_query_unsloth
 
 # Uncomment to compute metrics from saved results:
 # step8_metrics_gemini
 # step8_metrics_openai
-# step8_metrics_unsloth
+step8_metrics_unsloth
 
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}  Pipeline complete.${NC}"
+echo -e "${GREEN}  Pipeline complete.  Results → ${EXP_RUN_DIR}${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"

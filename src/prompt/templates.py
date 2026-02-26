@@ -60,6 +60,138 @@ INPUT_ENGINEERED_TEXT = """**Signal Statistics:** {}
 
 END_ENGINEERED_TEXT = "\nClassify the signal based on the provided data and options, following all rules above."
 
+# ── V2: Source-aware prompt engineering ──────────────────────────────────────
+# These are used only when --prompt_version v2 is selected.
+# The original templates above stay untouched for backward compatibility.
+
+SOURCE_CONTEXT = {
+    "centroid": (
+        "The candidate modulation schemes below were shortlisted by "
+        "measuring the Euclidean distance between the query signal's "
+        "encoder feature vector and per-class centroid prototypes in the "
+        "learned embedding space. Closer centroids indicate higher "
+        "similarity. All candidates are structurally guaranteed to be "
+        "distinct classes."
+    ),
+    "faiss": (
+        "The candidate modulation schemes below were shortlisted by a "
+        "k-nearest-neighbour (kNN) vote over training signals retrieved "
+        "from a FAISS vector index, weighted by inverse distance. "
+        "NOTE: If fewer candidates than expected appear, all retrieved "
+        "neighbours agreed on the same class — treat that class as the "
+        "strong favourite."
+    ),
+    "faiss_filled": (
+        "The candidate modulation schemes below were shortlisted in two "
+        "stages: (1) k-nearest-neighbour voting over training signals "
+        "from a FAISS index, and (2) brute-force filling to guarantee "
+        "a fixed number of distinct classes. The first candidates listed "
+        "are high-confidence kNN picks; later candidates were added for "
+        "diversity and may be less likely."
+    ),
+    "dnn": (
+        "The candidate modulation schemes below were shortlisted by a "
+        "trained DNN classifier head. The classes are ordered by softmax "
+        "probability (most likely first)."
+    ),
+    "rf": (
+        "The candidate modulation schemes below were shortlisted by a "
+        "Random Forest classifier trained on the encoder's feature space. "
+        "The classes are ordered by vote count (most likely first)."
+    ),
+}
+
+FEATURE_CONTEXT = {
+    "stats_discret": (
+        "The signal features below are statistical moments and cumulants "
+        "extracted from the I/Q components, then discretized into ordinal "
+        "bins (A = lowest, E = highest) using uniform binning. Each letter "
+        "represents the bin for that feature. Use the relative bin "
+        "positions — especially for higher-order cumulants (kstat_3, "
+        "kstat_4) — to identify the modulation signature."
+    ),
+    "stats_continuous": (
+        "The signal features below are moments, cumulants, and "
+        "descriptive statistics extracted from the I/Q components, then "
+        "standardized (zero mean, unit variance). Examine the relative "
+        "magnitudes — particularly the higher-order cumulants (kstat_3, "
+        "kstat_4) and kurtosis — to distinguish modulation schemes."
+    ),
+    "embeddings_discret": (
+        "The features below are PCA-compressed encoder embeddings "
+        "extracted from constellation diagram images (not raw signal "
+        "statistics). Each component was discretized into ordinal bins. "
+        "The components capture learned visual patterns from the images."
+    ),
+    "embeddings_continuous": (
+        "The features below are PCA-compressed encoder embeddings "
+        "extracted from constellation diagram images. These are abstract "
+        "learned features, not interpretable statistical moments. Focus "
+        "on the overall feature pattern rather than individual values."
+    ),
+}
+
+PROMPT_ENGINEERED_TEMPLATE_V2 = """**ROLE:**
+You are an expert AI signal classifier specializing in wireless communication modulation schemes.
+
+**OBJECTIVE:**
+Your task is to classify the modulation scheme of a wireless signal based on its provided features. You will use your domain knowledge of signal processing to interpret the features and select the correct classification from a predefined list.
+
+**SHORTLISTING METHOD:**
+{source_context}
+
+**FEATURE DESCRIPTION:**
+{feature_context}
+
+{{}}
+
+**RESPONSE RULES:**
+
+1.  **MANDATORY:** You **MUST** first use `<think>` tags to detail your step-by-step reasoning. Analyze the provided features, compare them to the known characteristics of each modulation type in the options list, and decide on the most probable classification.
+2.  **MANDATORY:** After the closing `</think>` tag, you **MUST** provide only the final classification.
+3.  The output **MUST** be a single entry, selected exclusively from the `CLASSIFICATION OPTIONS` list.
+4.  There **MUST NOT** be any additional words, explanations, or introductory text in the final output (e.g., no "The classification is:").
+
+-----
+
+**TASK EXECUTION:**
+
+"""
+
+INPUT_ENGINEERED_TEXT_V2 = """**Signal Features:** {}
+**Classification Options:** {}.
+**Answer:** {}"""
+
+END_ENGINEERED_TEXT_V2 = "\nClassify the signal based on the provided data, shortlisting context, and options, following all rules above."
+
+
+def get_engineered_template_v2(prediction_source: str, feature_type: str, discretized: bool) -> str:
+    """Return a fully-formatted V2 instruction template.
+
+    Parameters
+    ----------
+    prediction_source : str
+        One of ``"centroid"``, ``"faiss"``, ``"faiss_filled"``, ``"dnn"``, ``"rf"``.
+    feature_type : str
+        ``"stats"`` or ``"embeddings"``.
+    discretized : bool
+        Whether features are discretized (True) or continuous (False).
+
+    Returns
+    -------
+    str
+        The instruction template with ``{source_context}`` and
+        ``{feature_context}`` filled in, but the ``{{}}`` placeholder
+        for few-shot examples still open for ``generate_prompt()``.
+    """
+    src_ctx = SOURCE_CONTEXT.get(prediction_source, SOURCE_CONTEXT["dnn"])
+    feat_key = f"{feature_type}_{'discret' if discretized else 'continuous'}"
+    feat_ctx = FEATURE_CONTEXT.get(feat_key, FEATURE_CONTEXT["stats_discret"])
+    return PROMPT_ENGINEERED_TEMPLATE_V2.format(
+        source_context=src_ctx,
+        feature_context=feat_ctx,
+    )
+
 AMPLITUDE_FAMILY = { 
     'ASK': ['4ASK', '8ASK', 'OOK'],
     'APSK': ['16APSK', '32APSK', '64APSK', '128APSK']
