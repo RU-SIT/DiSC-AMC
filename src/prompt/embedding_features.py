@@ -148,6 +148,7 @@ def extract_embeddings_from_paths(
     device: torch.device,
     image_paths: List[str],
     batch_size: int = 32,
+    verbose: bool = True,
 ) -> np.ndarray:
     """Run every image in *image_paths* through *encoder*.
 
@@ -174,6 +175,7 @@ def extract_embeddings_from_paths(
     for start in tqdm(
         range(0, len(image_paths), batch_size),
         desc="Extracting embeddings",
+        disable=not verbose,
     ):
         batch = _load_images_as_batch(image_paths[start : start + batch_size])
         with torch.no_grad():
@@ -283,6 +285,7 @@ def prepare_example_embedding_dicts(
     discretizers: Dict[int, KBinsDiscretizer],
     scaler: StandardScaler,
     batch_size: int = 32,
+    verbose: bool = True,
 ) -> Tuple[Dict[str, list], Dict[str, list]]:
     """Pre-process example signals into embedding feature dicts.
 
@@ -326,7 +329,7 @@ def prepare_example_embedding_dicts(
 
     # ── Batch-extract embeddings → PCA → scale / discretize ──────────────
     embeddings = extract_embeddings_from_paths(
-        encoder, device, all_image_paths, batch_size,
+        encoder, device, all_image_paths, batch_size, verbose=verbose,
     )
     reduced = pca.transform(embeddings)
 

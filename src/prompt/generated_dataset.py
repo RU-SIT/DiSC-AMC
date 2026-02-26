@@ -602,6 +602,7 @@ def get_embedding_processed_data(
             s_ex, d_ex = prepare_example_embedding_dicts(
                 encoder, device, rag_example_paths, noise_mode,
                 n_components, pca, discretizers, scaler, batch_size,
+                verbose=False,
             )
             return s_ex, d_ex
 
