@@ -183,6 +183,10 @@ class ExperimentConfig:
     rag_k: int = 0
     """Number of RAG neighbours (only relevant when ``use_rag=True``)."""
 
+    prompt_version: str = "v1"
+    """Prompt format version (``"v1"`` = original, ``"v2"`` = source-aware).
+    ``"v1"`` is omitted from the tag for backward compatibility."""
+
     def build_tag(self) -> str:
         """Build a compact tag string from non-default dimensions.
 
@@ -212,6 +216,10 @@ class ExperimentConfig:
         # RAG
         if self.use_rag and self.rag_k > 0:
             parts.append(f"rag{self.rag_k}")
+
+        # Prompt version (omit default "v1" for backward compat)
+        if self.prompt_version and self.prompt_version != "v1":
+            parts.append(f"p{self.prompt_version}")
 
         return "_".join(parts)
 

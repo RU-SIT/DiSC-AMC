@@ -464,6 +464,7 @@ main(
     use_rag=${USE_RAG_PY},
     rag_k=${RAG_K_EVAL},
     output_dir='${EXP_RUN_DIR}',
+    prompt_version='${PROMPT_VERSION}',
 )
 "
 }
@@ -488,6 +489,7 @@ main(
     use_rag=${USE_RAG_PY},
     rag_k=${RAG_K_EVAL},
     output_dir='${EXP_RUN_DIR}',
+    prompt_version='${PROMPT_VERSION}',
 )
 "
 }
@@ -516,6 +518,7 @@ main(
     output_dir='${EXP_RUN_DIR}',
     inference_batch_size=${INFERENCE_BATCH_SIZE},
     max_new_tokens=${MAX_NEW_TOKENS},
+    prompt_version='${PROMPT_VERSION}',
 )
 "
 }
@@ -541,6 +544,7 @@ results = read_results(
     use_rag=${USE_RAG_PY},
     rag_k=${RAG_K_EVAL},
     output_dir='${EXP_RUN_DIR}',
+    prompt_version='${PROMPT_VERSION}',
 )
 sorted_results = sort_results_by_prompt(results)
 print(f'Unique prompts: {len(get_unique_prompts(results))}')
@@ -569,6 +573,7 @@ results = read_results(
     use_rag=${USE_RAG_PY},
     rag_k=${RAG_K_EVAL},
     output_dir='${EXP_RUN_DIR}',
+    prompt_version='${PROMPT_VERSION}',
 )
 sorted_results = sort_results_by_prompt(results)
 print(f'Unique prompts: {len(get_unique_prompts(results))}')
