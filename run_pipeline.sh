@@ -84,6 +84,8 @@ NUM_TRIES=1
 GEMINI_MODEL="gemini-2.5-flash"
 OPENAI_MODEL="o3-mini"
 UNSLOTH_MODEL="unsloth/DeepSeek-R1-Distill-Qwen-7B" # Options: "unsloth/gpt-oss-20b-unsloth-bnb-4bit", "unsloth/gemma-3-27b-it-unsloth-bnb-4bit", "unsloth/DeepSeek-R1-Distill-Qwen-7B", "unsloth/DeepSeek-R1-Distill-Qwen-32B-unsloth-bnb-4bit"
+INFERENCE_BATCH_SIZE=8         # prompts per model.generate() call (higher = faster, more VRAM)
+MAX_NEW_TOKENS=512             # token budget per response (3000 is wasteful for classification)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # AUTOMATIC / DERIVED VARIABLES (Do not edit below this line)
@@ -512,6 +514,8 @@ main(
     cache_dir='${MODEL_DIR}',
     data_root='${DATA_ROOT}',
     output_dir='${EXP_RUN_DIR}',
+    inference_batch_size=${INFERENCE_BATCH_SIZE},
+    max_new_tokens=${MAX_NEW_TOKENS},
 )
 "
 }

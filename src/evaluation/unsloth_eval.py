@@ -68,28 +68,70 @@ def load_model_and_tokenizer(
     return model, tokenizer
 
 
-def get_model_response(prompt: str, model, tokenizer,
-                       temperature: float = 0.7, chat_template: str = 'gemma-3') -> str:
-    """Get response from a local Unsloth model."""
+def _apply_chat_template(prompt: str, tokenizer, chat_template: str) -> str:
+    """Convert a raw prompt string to the model's chat format (returns a string)."""
     if chat_template == 'gemma-3':
-        tokenizer = get_chat_template(tokenizer, chat_template=chat_template)
         messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
-        text = tokenizer.apply_chat_template(messages, add_generation_prompt=True)
-        inputs = tokenizer(text, add_special_tokens=False, return_tensors="pt").to("cuda")
     else:
         messages = [{"role": "user", "content": prompt}]
-        text = prompt
-        inputs = tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True,
-            return_tensors="pt", return_dict=True,
-        ).to("cuda")
+    return tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
 
+
+def get_model_response(prompt: str, model, tokenizer,
+                       temperature: float = 0.7, chat_template: str = 'gemma-3',
+                       max_new_tokens: int = 512) -> str:
+    """Get response from a local Unsloth model (single-sample fallback)."""
+    text = _apply_chat_template(prompt, tokenizer, chat_template)
+    inputs = tokenizer(text, add_special_tokens=False, return_tensors="pt").to("cuda")
     outputs = model.generate(
-        **inputs, max_new_tokens=3000,
+        **inputs, max_new_tokens=max_new_tokens,
         temperature=temperature, top_p=0.95, top_k=64, use_cache=True,
     )
-    raw_decoded = tokenizer.batch_decode(outputs)
-    return raw_decoded[0][len(text) - 41:]
+    # Decode only the newly generated tokens
+    new_tokens = outputs[0][inputs["input_ids"].shape[1]:]
+    return tokenizer.decode(new_tokens, skip_special_tokens=True)
+
+
+def get_model_response_batch(
+    prompts: List[str],
+    model,
+    tokenizer,
+    temperature: float = 0.7,
+    chat_template: str = '',
+    max_new_tokens: int = 512,
+) -> List[str]:
+    """Batched inference — process multiple prompts in one model.generate() call.
+
+    Uses left-padding so all sequences end at the same position, which is
+    required for correct auto-regressive generation with padding tokens.
+    """
+    texts = [_apply_chat_template(p, tokenizer, chat_template) for p in prompts]
+
+    # Ensure pad token exists and use left-padding for generation
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+    orig_padding_side = tokenizer.padding_side
+    tokenizer.padding_side = "left"
+
+    inputs = tokenizer(
+        texts, return_tensors="pt", padding=True, add_special_tokens=False
+    ).to("cuda")
+    input_lengths = inputs["attention_mask"].sum(dim=1)  # true (non-pad) length per sample
+
+    tokenizer.padding_side = orig_padding_side  # restore
+
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs, max_new_tokens=max_new_tokens,
+            temperature=temperature, top_p=0.95, top_k=64, use_cache=True,
+        )
+
+    # Decode only the newly generated tokens for each sample
+    responses = []
+    for i, out in enumerate(outputs):
+        new_tokens = out[input_lengths[i]:]
+        responses.append(tokenizer.decode(new_tokens, skip_special_tokens=True))
+    return responses
 
 
 def _detect_chat_template(model_name: str) -> str:
@@ -117,7 +159,9 @@ def main(dataset_folder, prompt_type='discret_prompts',
          feature_type='stats', n_components=0,
          ood_train_folder='', use_rag=False, rag_k=0,
          cache_dir="../../models", data_root="../../data/own",
-         output_dir=".", adapter_path=None):
+         output_dir=".", adapter_path=None,
+         inference_batch_size: int = 8,
+         max_new_tokens: int = 512):
     cfg = ExperimentConfig(
         dataset_folder=dataset_folder,
         prediction_source=prediction_source,
@@ -146,23 +190,56 @@ def main(dataset_folder, prompt_type='discret_prompts',
         chat_template = _detect_chat_template(model_name)
         start_tag, end_tag = _get_response_tags(chat_template)
 
-        for prompt_data, num_done in tqdm(prompts_to_process):
+        # Apply chat template to tokenizer once (gemma-3 path only)
+        if chat_template == 'gemma-3':
+            tokenizer = get_chat_template(tokenizer, chat_template=chat_template)
+
+        # ── Batched inference ─────────────────────────────────────────
+        # Flatten (prompt_data, num_done) pairs into individual work items
+        work_items = []
+        for prompt_data, num_done in prompts_to_process:
+            for i in range(num_done, num_tries):
+                work_items.append((prompt_data, i))
+
+        print(f"  → {len(work_items)} inference calls, batch_size={inference_batch_size}, "
+              f"max_new_tokens={max_new_tokens}")
+
+        for batch_start in tqdm(range(0, len(work_items), inference_batch_size),
+                                desc="Batched inference"):
+            batch = work_items[batch_start: batch_start + inference_batch_size]
+            prompts_batch = [item[0]['prompt'] for item in batch]
             try:
-                prompt, filename = prompt_data['prompt'], prompt_data['filename']
-                for i in range(num_done, num_tries):
-                    raw_response = get_model_response(
-                        prompt, model=model, tokenizer=tokenizer,
-                        temperature=0.2, chat_template=chat_template,
-                    )
+                responses = get_model_response_batch(
+                    prompts_batch, model=model, tokenizer=tokenizer,
+                    temperature=0.2, chat_template=chat_template,
+                    max_new_tokens=max_new_tokens,
+                )
+                for (prompt_data, i), raw_response in zip(batch, responses):
                     if not raw_response:
-                        raise Exception("Empty response, stopping")
-                    results.append(build_result_entry(filename, i, prompt, raw_response, start_tag, end_tag))
+                        print(f"  Empty response for {prompt_data['filename']}, skipping.")
+                        continue
+                    results.append(build_result_entry(
+                        prompt_data['filename'], i, prompt_data['prompt'],
+                        raw_response, start_tag, end_tag,
+                    ))
             except Exception as e:
-                if "stopping" in str(e).lower():
-                    print(str(e))
-                    break
-                print(f"Error processing {prompt_data['filename']}: {e}")
+                print(f"Batch error at index {batch_start}: {e}")
                 print(traceback.format_exc())
+                # Fall back to single-sample inference for this batch
+                for prompt_data, i in batch:
+                    try:
+                        raw_response = get_model_response(
+                            prompt_data['prompt'], model=model, tokenizer=tokenizer,
+                            temperature=0.2, chat_template=chat_template,
+                            max_new_tokens=max_new_tokens,
+                        )
+                        if raw_response:
+                            results.append(build_result_entry(
+                                prompt_data['filename'], i, prompt_data['prompt'],
+                                raw_response, start_tag, end_tag,
+                            ))
+                    except Exception as inner_e:
+                        print(f"  Fallback failed for {prompt_data['filename']}: {inner_e}")
 
     except KeyboardInterrupt:
         print("\nInterrupted. Saving partial results...")
