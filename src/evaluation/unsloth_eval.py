@@ -24,15 +24,46 @@ print("CUDA device count:", torch.cuda.device_count())
 CLASS_NAMES = ['4ASK', '4PAM', '8ASK', '16PAM', 'CPFSK', 'DQPSK', 'GFSK', 'GMSK', 'OQPSK', 'OOK']
 
 
-def load_model_and_tokenizer(model_name: str = 'unsloth/gemma-3-27b-it-unsloth-bnb-4bit', cache_dir="../../models"):
-    """Load an Unsloth model and tokenizer."""
-    model, tokenizer = FastVisionModel.from_pretrained(
-        model_name=model_name,
-        max_seq_length=200000,
-        dtype=None,
-        load_in_4bit=False,
-        cache_dir=cache_dir,
-    )
+def load_model_and_tokenizer(
+    model_name: str = 'unsloth/gemma-3-27b-it-unsloth-bnb-4bit',
+    cache_dir: str = "../../models",
+    adapter_path: str | None = None,
+):
+    """Load an Unsloth model and tokenizer.
+
+    Parameters
+    ----------
+    model_name
+        HuggingFace / Unsloth model identifier.
+    cache_dir
+        Directory for cached model weights.
+    adapter_path
+        Optional path to a LoRA adapter directory.  When provided the
+        base model is loaded first and then the adapter is applied on
+        top, so the finetuned weights are used for inference.
+    """
+    if adapter_path is not None:
+        # ── Finetuned model: load base in 4-bit then apply LoRA ──────
+        print(f"Loading base model (4-bit) for adapter: {model_name}")
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=model_name,
+            max_seq_length=200000,
+            dtype=None,
+            load_in_4bit=True,
+            cache_dir=cache_dir,
+        )
+        print(f"Loading LoRA adapter from: {adapter_path}")
+        from peft import PeftModel
+        model = PeftModel.from_pretrained(model, adapter_path)
+    else:
+        # ── Original path: unchanged behaviour ───────────────────────
+        model, tokenizer = FastVisionModel.from_pretrained(
+            model_name=model_name,
+            max_seq_length=200000,
+            dtype=None,
+            load_in_4bit=False,
+            cache_dir=cache_dir,
+        )
     FastLanguageModel.for_inference(model)
     return model, tokenizer
 
@@ -86,7 +117,7 @@ def main(dataset_folder, prompt_type='discret_prompts',
          feature_type='stats', n_components=0,
          ood_train_folder='', use_rag=False, rag_k=0,
          cache_dir="../../models", data_root="../../data/own",
-         output_dir="."):
+         output_dir=".", adapter_path=None):
     cfg = ExperimentConfig(
         dataset_folder=dataset_folder,
         prediction_source=prediction_source,
@@ -106,7 +137,7 @@ def main(dataset_folder, prompt_type='discret_prompts',
         data, _, _ = load_data(f'{data_root}/{dataset_folder}', noise_mode, n_bins, top_k,
                                prediction_source=prediction_source,
                                feature_tag=f'emb{n_components}' if feature_type == 'embeddings' else '')
-        model, tokenizer = load_model_and_tokenizer(model_name, cache_dir=cache_dir)
+        model, tokenizer = load_model_and_tokenizer(model_name, cache_dir=cache_dir, adapter_path=adapter_path)
 
         all_prompts_data = build_prompts_data(data, prompt_type)
         results, prompts_done, completed = load_existing_results(filepath, num_tries)
