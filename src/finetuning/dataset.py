@@ -140,6 +140,72 @@ def _format_options(classes: List[str]) -> str:
     return "[" + ", ".join(items) + "]"
 
 
+# ── v2 reasoning: feature-aware <think> completions ──────────────────────────
+
+# Which feature keys are "higher-order" discriminative cumulants
+_DISCRIMINATIVE_FEATURES = {"kstat_3", "kstat_4", "kurtosis", "skewness", "variance"}
+
+# Brief domain knowledge per modulation class (used to ground the reasoning)
+_MOD_HINTS: Dict[str, str] = {
+    "4ASK":  "4-level ASK exhibits moderate variance with low kurtosis and near-zero skewness due to its symmetric amplitude levels",
+    "4PAM":  "4-PAM shows distinct amplitude spacing reflected in higher variance and characteristic moment patterns",
+    "8ASK":  "8-ASK has finer amplitude granularity leading to elevated variance and broader moment spread",
+    "16PAM": "16-PAM produces the widest amplitude range, resulting in high variance and distinctive higher-order cumulants",
+    "CPFSK": "CPFSK is a constant-envelope FM scheme with near-zero kurtosis excess and low skewness",
+    "DQPSK": "DQPSK has constant envelope and phase transitions that yield near-zero variance in amplitude with moderate kstat values",
+    "GFSK":  "GFSK has a Gaussian-shaped frequency pulse, producing smooth spectral features and characteristic low kstat_3",
+    "GMSK":  "GMSK is minimum-shift with Gaussian filtering, resulting in near-constant envelope and distinctive cumulant ratios",
+    "OQPSK": "OQPSK offsets I/Q by half a symbol, producing reduced amplitude fluctuations and specific kstat_4 behaviour",
+    "OOK":   "OOK is binary amplitude keying with high skewness (asymmetric on/off) and distinctively large kurtosis",
+}
+
+
+def _build_v2_reasoning(
+    feature_dict: dict,
+    label: str,
+    discretized: bool,
+) -> str:
+    """Build a feature-aware reasoning string for the ``<think>`` block.
+
+    Instead of a generic one-liner, this references the actual
+    discriminative features and domain knowledge about the modulation.
+    """
+    # Identify which discriminative features are present in this sample
+    present_disc = [k for k in feature_dict if k in _DISCRIMINATIVE_FEATURES]
+
+    # Summarise the most informative features
+    if discretized:
+        feat_summary_parts = []
+        for k in present_disc[:3]:  # top-3 discriminative features
+            v = feature_dict[k]
+            if hasattr(v, "__iter__"):
+                letters = ", ".join(_to_base26(int(x)) for x in v)
+                feat_summary_parts.append(f"{k}=[{letters}]")
+            else:
+                feat_summary_parts.append(f"{k}={_to_base26(int(v))}")
+    else:
+        feat_summary_parts = []
+        for k in present_disc[:3]:
+            v = feature_dict[k]
+            if hasattr(v, "__iter__"):
+                vals = ", ".join(f"{float(x):.3f}" for x in v)
+                feat_summary_parts.append(f"{k}=[{vals}]")
+            else:
+                feat_summary_parts.append(f"{k}={float(v):.3f}")
+
+    feat_summary = ", ".join(feat_summary_parts) if feat_summary_parts else "the overall feature pattern"
+
+    # Domain hint for the label
+    hint = _MOD_HINTS.get(label, f"{label} has a characteristic statistical fingerprint")
+
+    lines = [
+        f"Examining the key discriminative features: {feat_summary}.",
+        f"Recall that {hint}.",
+        f"The observed feature values are consistent with {label} modulation.",
+    ]
+    return "\n".join(lines)
+
+
 # ── Core dataset builder ────────────────────────────────────────────────────
 
 def load_train_pkl(path: str) -> Dict[str, Any]:
@@ -153,6 +219,7 @@ def build_sft_samples(
     prompt_style: str = "discret",
     use_thinking: bool = True,
     decimal_precision: int = 3,
+    completion_version: str = "v1",
 ) -> List[Dict[str, str]]:
     """Build zero-shot SFT training samples from pkl data.
 
@@ -172,6 +239,10 @@ def build_sft_samples(
         followed by the label.  If False, completion is the label only.
     decimal_precision
         Decimal places for continuous features.
+    completion_version
+        ``"v1"`` → generic one-liner reasoning,
+        ``"v2"`` → feature-aware reasoning that references discriminative
+        features and domain knowledge about the modulation class.
 
     Returns
     -------
@@ -208,10 +279,16 @@ def build_sft_samples(
         prompt = template.format(features=features_str, options=options_str)
 
         if use_thinking:
-            completion = (
-                f"<think>\nBased on the signal statistics, the features point "
-                f"towards {label} modulation.\n</think>\n{label}"
-            )
+            if completion_version == "v2":
+                reasoning = _build_v2_reasoning(feat_dict, label, discretized)
+                completion = (
+                    f"<think>\n{reasoning}\n</think>\n{label}"
+                )
+            else:
+                completion = (
+                    f"<think>\nBased on the signal statistics, the features point "
+                    f"towards {label} modulation.\n</think>\n{label}"
+                )
         else:
             completion = label
 
@@ -226,6 +303,7 @@ def create_hf_dataset(
     use_thinking: bool = True,
     decimal_precision: int = 3,
     chat_template: str = "auto",
+    completion_version: str = "v1",
 ) -> Dataset:
     """Build a Hugging Face Dataset formatted as chat conversations.
 
@@ -245,6 +323,8 @@ def create_hf_dataset(
         Decimal places for continuous features.
     chat_template
         Chat template name hint (unused here, consumed by train.py).
+    completion_version
+        ``"v1"`` (generic reasoning) or ``"v2"`` (feature-aware reasoning).
 
     Returns
     -------
@@ -255,6 +335,7 @@ def create_hf_dataset(
         prompt_style=prompt_style,
         use_thinking=use_thinking,
         decimal_precision=decimal_precision,
+        completion_version=completion_version,
     )
 
     conversations = []
@@ -299,6 +380,11 @@ def main():
         "--export_jsonl", type=str, default=None,
         help="If set, export full dataset to this JSONL path.",
     )
+    parser.add_argument(
+        "--completion_version", type=str, default="v1",
+        choices=["v1", "v2"],
+        help="Completion reasoning version: v1 (generic) or v2 (feature-aware) (default: v1).",
+    )
 
     args = parser.parse_args()
     use_thinking = not args.no_thinking
@@ -311,6 +397,7 @@ def main():
         data,
         prompt_style=args.prompt_style,
         use_thinking=use_thinking,
+        completion_version=args.completion_version,
     )
     print(f"  → Built {len(samples)} SFT samples")
 
@@ -332,6 +419,7 @@ def main():
             data,
             prompt_style=args.prompt_style,
             use_thinking=use_thinking,
+            completion_version=args.completion_version,
         )
         with open(args.export_jsonl, "w") as f:
             for row in ds:

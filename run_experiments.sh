@@ -20,7 +20,7 @@
 set -euo pipefail
 
 # ─── CLI argument parsing ────────────────────────────────────────────────
-RESUME=false
+RESUME=true
 for arg in "$@"; do
     case "$arg" in
         --resume) RESUME=true ;;
@@ -44,7 +44,7 @@ NC='\033[0m'
 
 # ─── Experiment grid ─────────────────────────────────────────────────────
 MODELS=(
-    # "unsloth/DeepSeek-R1-Distill-Qwen-7B"
+    "unsloth/DeepSeek-R1-Distill-Qwen-7B"
     "unsloth/GLM-4.6V-Flash"
 )
 
@@ -52,6 +52,7 @@ MODELS=(
 DATASETS=(
     "unlabeled_10k|"
     "-11_-15dB|unlabeled_10k"
+    "-30dB|unlabeled_10k"
 )
 
 PREDICTION_SOURCES=("centroid" "faiss" ) #"faiss_filled"
