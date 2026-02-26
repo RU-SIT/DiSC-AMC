@@ -30,6 +30,8 @@ from trl import SFTTrainer, SFTConfig
 
 from src.finetuning.dataset import create_hf_dataset, load_train_pkl
 
+DEFAULT_COMPLETION_VERSION = "v1"
+
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
 
@@ -43,6 +45,7 @@ DEFAULT_GRAD_ACCUM = 4
 DEFAULT_MAX_SEQ_LEN = 2048
 DEFAULT_WARMUP_STEPS = 5
 DEFAULT_WEIGHT_DECAY = 0.01
+DEFAULT_VAL_SPLIT = 0.0
 DEFAULT_SEED = 3407
 
 # Modules targeted by LoRA adapters (covers attention + MLP for most LLMs)
@@ -92,6 +95,8 @@ def train(
     seed: int = DEFAULT_SEED,
     cache_dir: str = "../../models",
     save_merged: bool = False,
+    val_split: float = DEFAULT_VAL_SPLIT,
+    completion_version: str = DEFAULT_COMPLETION_VERSION,
 ):
     """Run QLoRA finetuning.
 
@@ -109,6 +114,10 @@ def train(
         Whether to include ``<think>`` reasoning in training targets.
     save_merged
         If True, also save a merged 16-bit model alongside the adapter.
+    val_split
+        Fraction of training data to hold out for validation (0.0 = no
+        validation set).  When > 0 the eval loss is logged every
+        ``logging_steps`` and the best checkpoint is kept.
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -149,6 +158,7 @@ def train(
         data,
         prompt_style=prompt_style,
         use_thinking=use_thinking,
+        completion_version=completion_version,
     )
     dataset = standardize_sharegpt(dataset)
     print(f"  → Dataset: {len(dataset)} rows")
@@ -166,7 +176,16 @@ def train(
 
     dataset = dataset.map(formatting_func, batched=True)
 
+    # ── 5b. Optional train/val split ─────────────────────────────────────
+    eval_dataset = None
+    if val_split > 0:
+        split = dataset.train_test_split(test_size=val_split, seed=seed)
+        dataset = split["train"]
+        eval_dataset = split["test"]
+        print(f"  → Train/val split: {len(dataset)} train, {len(eval_dataset)} val")
+
     # ── 6. Training config ───────────────────────────────────────────────
+    has_eval = eval_dataset is not None
     training_args = SFTConfig(
         output_dir=output_dir,
         per_device_train_batch_size=batch_size,
@@ -186,7 +205,14 @@ def train(
         report_to="none",       # set to "wandb" if you want W&B logging
         dataset_text_field="text",
         max_seq_length=max_seq_length,
-        packing=False,
+        packing=True,
+        # ── Eval settings (active only when val_split > 0) ───────────
+        eval_strategy="steps" if has_eval else "no",
+        eval_steps=50 if has_eval else None,
+        per_device_eval_batch_size=batch_size,
+        load_best_model_at_end=has_eval,
+        metric_for_best_model="eval_loss" if has_eval else None,
+        greater_is_better=False if has_eval else None,
     )
 
     # ── 7. Train ─────────────────────────────────────────────────────────
@@ -194,6 +220,7 @@ def train(
         model=model,
         tokenizer=tokenizer,
         train_dataset=dataset,
+        eval_dataset=eval_dataset,
         args=training_args,
     )
 
@@ -283,6 +310,18 @@ def main():
     parser.add_argument("--cache_dir", type=str, default="../../models",
                         help="Model cache directory (default: ../../models).")
 
+    # Validation
+    parser.add_argument("--val_split", type=float, default=DEFAULT_VAL_SPLIT,
+                        help=f"Hold-out fraction for validation (default: {DEFAULT_VAL_SPLIT}). "
+                             "Set to e.g. 0.1 to monitor eval loss.")
+
+    # Completion reasoning
+    parser.add_argument("--completion_version", type=str,
+                        default=DEFAULT_COMPLETION_VERSION,
+                        choices=["v1", "v2"],
+                        help=f"Completion reasoning: v1 (generic) or v2 (feature-aware) "
+                             f"(default: {DEFAULT_COMPLETION_VERSION}).")
+
     # Output
     parser.add_argument("--save_merged", action="store_true", default=False,
                         help="Also save merged 16-bit model (large!).")
@@ -306,6 +345,8 @@ def main():
         seed=args.seed,
         cache_dir=args.cache_dir,
         save_merged=args.save_merged,
+        val_split=args.val_split,
+        completion_version=args.completion_version,
     )
 
 

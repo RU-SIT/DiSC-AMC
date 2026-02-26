@@ -93,6 +93,13 @@ SOURCES: Dict[str, PredictionSource] = {
         converted_json="ntop{topk}_faiss_predictions.json",
         pkl_tag="faiss",
     ),
+    "faiss_filled": PredictionSource(
+        key="faiss_filled",
+        label="FAISS kNN voting (padded to top-k)",
+        raw_json="top{topk}_faiss_filled_predictions.json",
+        converted_json="ntop{topk}_faiss_filled_predictions.json",
+        pkl_tag="faiss_filled",
+    ),
 }
 
 VALID_SOURCES: List[str] = list(SOURCES.keys())
