@@ -46,6 +46,8 @@ MODEL_DIR="/mnt/d/Rowan/discrete-llm-amc/models"
 DATASET_FOLDER="unlabeled_10k"                    # folder name under DATA_ROOT
 TRAIN_DATASET_FOLDER=""      # OOD: load train .pkl from this folder
                                           # set to "" to use DATASET_FOLDER for both
+DATASET_TYPE="own"           # "own" (flat dir, class in filename) or
+                             # "radioml" (test/{Class}/*.npy, SNR in parent dir)
 
 # ─── Model / backbone (for data generation steps) ───────────────────────
 BACKBONE="dino"             # dino | resnet
@@ -55,7 +57,7 @@ NUM_WORKERS=4
 
 # ─── Data generation (from run_pipeline) ────────────────────────────────
 CLASSIFIER_PATH="${EXP_DIR}/dino_classifier.pth"
-PREDICTION_SOURCE="faiss" # dnn | centroid | rf | faiss
+PREDICTION_SOURCE="faiss_filled" # dnn | centroid | rf | faiss
 TOP_K=5
 NOISE_MODE="noisySignal"    # noisySignal | noiselessSignal
 N_BINS=5
@@ -68,7 +70,11 @@ FAISS_INDEX_PATH="${DATA_ROOT}/${TRAIN_DATASET_FOLDER:-$DATASET_FOLDER}/train/fa
 # ─── Feature type ───────────────────────────────────────────────────────
 USE_RAG=true               # true → build/use FAISS index for example selection
 RAG_K=10                    # number of nearest neighbours per test signal
-MIN_CLASSES=$TOP_K          # min classes to allow RAG (otherwise fall back to top-K)
+MIN_RAG_CLASSES=5           # min distinct classes among RAG *few-shot examples* (widens
+                             # similarity search until N classes appear; 0 = no constraint)
+                             # NOTE: this does NOT affect classification options in the prompt.
+                             # For guaranteed TOP_K distinct options, regenerate predictions
+                             # with PREDICTION_SOURCE=faiss_filled in run_pipeline.sh
 FEATURE_TYPE="embeddings"        # stats | embeddings
 PROMPT_VERSION="v2"         # v1 (original) | v2 (source-aware)
 COMPLETION_VERSION=$PROMPT_VERSION       # v1 (generic reasoning) | v2 (feature-aware reasoning)
@@ -121,7 +127,7 @@ MAX_NEW_TOKENS=512             # token budget per response (3000 is wasteful for
 # while TRAIN_DATASET_FOLDER (or DATASET_FOLDER) remains the training source.
 OOD_TEST_FOLDERS=(             # e.g. ("-30dB" "-11_-15dB")
     "-30dB"
-    # "-11_-15dB"
+    "-11_-15dB"
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -188,6 +194,37 @@ fi
 # .pkl resides directly in the dataset folder (no train/ subdir)
 TRAIN_PKL_DIR="${DATA_ROOT}/${TRAIN_DATASET_FOLDER:-$DATASET_FOLDER}"
 TRAIN_PKL_PATH="${TRAIN_PKL_DIR}/${TRAIN_PKL_NAME}"
+
+# ─── Build TEST pkl tag (includes rag + prompt version, unlike train) ────
+_build_test_pkl_tag() {
+    local parts=()
+    if [[ "$PREDICTION_SOURCE" != "dnn" ]]; then
+        parts+=("$PREDICTION_SOURCE")
+    fi
+    if [[ -n "$OOD_TRAIN_FOLDER" ]]; then
+        parts+=("ood")
+    fi
+    if [[ "$FEATURE_TYPE" == "embeddings" && "$N_COMPONENTS" -gt 0 ]]; then
+        parts+=("emb${N_COMPONENTS}")
+    fi
+    if [[ "$USE_RAG" == "true" && "$RAG_K" -gt 0 ]]; then
+        parts+=("rag${RAG_K}")
+    fi
+    if [[ "$PROMPT_VERSION" != "v1" && -n "$PROMPT_VERSION" ]]; then
+        parts+=("p${PROMPT_VERSION}")
+    fi
+    local IFS="_"
+    echo "${parts[*]}"
+}
+
+TEST_PKL_TAG="$(_build_test_pkl_tag)"
+if [[ -n "$TEST_PKL_TAG" ]]; then
+    TEST_PKL_NAME="test_${TEST_PKL_TAG}_${NOISE_MODE}_${N_BINS}_${TOP_K}_data.pkl"
+else
+    TEST_PKL_NAME="test_${NOISE_MODE}_${N_BINS}_${TOP_K}_data.pkl"
+fi
+TEST_PKL_DIR="${DATA_ROOT}/${DATASET_FOLDER}"
+TEST_PKL_PATH="${TEST_PKL_DIR}/${TEST_PKL_NAME}"
 
 # ─── Shorten model name for folder naming ────────────────────────────────
 _shorten_model() {
@@ -361,7 +398,7 @@ step_generate_train_pkl() {
 
     local rag_flags=""
     if [[ "$USE_RAG" == "true" ]]; then
-        rag_flags="--use_rag --rag_k $RAG_K --min_classes $MIN_CLASSES"
+        rag_flags="--use_rag --rag_k $RAG_K --min_classes $MIN_RAG_CLASSES"
     fi
 
     local target_folder="${TRAIN_DATASET_FOLDER:-$DATASET_FOLDER}"
@@ -377,7 +414,8 @@ step_generate_train_pkl() {
         --data_root "$DATA_ROOT" \
         $emb_flags \
         $rag_flags \
-        --prompt_version "$PROMPT_VERSION"
+        --prompt_version "$PROMPT_VERSION" \
+        --dataset_type "$DATASET_TYPE"
 
     echo "  → Train .pkl generated: ${TRAIN_PKL_PATH}"
 }
@@ -436,6 +474,13 @@ step_finetune() {
 # ─── STEP D: Generate test .pkl for evaluation ──────────────────────────
 step_generate_test_pkl() {
     log_step "STEP D — Generate test .pkl dataset"
+
+    if [[ -f "$TEST_PKL_PATH" ]]; then
+        echo "  Test .pkl already exists: ${TEST_PKL_PATH}"
+        echo "  Skipping generation. Delete it to regenerate."
+        return 0
+    fi
+
     cd "$PROJECT_ROOT"
 
     local emb_flags=""
@@ -449,7 +494,7 @@ step_generate_test_pkl() {
 
     local rag_flags=""
     if [[ "$USE_RAG" == "true" ]]; then
-        rag_flags="--use_rag --rag_k $RAG_K --min_classes $MIN_CLASSES"
+        rag_flags="--use_rag --rag_k $RAG_K --min_classes $MIN_RAG_CLASSES"
     fi
 
     local ood_flag=""
@@ -469,7 +514,8 @@ step_generate_test_pkl() {
         $ood_flag \
         $emb_flags \
         $rag_flags \
-        --prompt_version "$PROMPT_VERSION"
+        --prompt_version "$PROMPT_VERSION" \
+        --dataset_type "$DATASET_TYPE"
 
     echo "  → Test .pkl generated."
 }
@@ -539,7 +585,7 @@ step_evaluate_ood_all() {
 
     local rag_flags=""
     if [[ "$USE_RAG" == "true" ]]; then
-        rag_flags="--use_rag --rag_k $RAG_K --min_classes $MIN_CLASSES"
+        rag_flags="--use_rag --rag_k $RAG_K --min_classes $MIN_RAG_CLASSES"
     fi
 
     for test_folder in "${OOD_TEST_FOLDERS[@]}"; do
@@ -559,7 +605,8 @@ step_evaluate_ood_all() {
             --train_dataset_folder="$train_src" \
             $emb_flags \
             $rag_flags \
-            --prompt_version "$PROMPT_VERSION"
+            --prompt_version "$PROMPT_VERSION" \
+            --dataset_type "$DATASET_TYPE"
 
         # ── 2. Run inference ─────────────────────────────────────────
         echo "  Running inference …"
@@ -589,10 +636,15 @@ main(
 )
 "
 
-        # ── 3. Print metrics ─────────────────────────────────────────
+        # ── 3. Print metrics and save to CSV ─────────────────────────
         python -c "
-from src.evaluation.unsloth_eval import read_results, CLASS_NAMES
-from src.evaluation.utils import sort_results_by_prompt, get_unique_prompts, print_metrics
+import os
+import csv
+from src.evaluation.unsloth_eval import read_results, get_class_names
+from src.evaluation.utils import sort_results_by_prompt, get_unique_prompts, print_metrics, pass_acc, majority_acc, acc, clean_acc
+
+_CLASS_NAMES = get_class_names('${DATASET_TYPE}')
+
 results = read_results(
     dataset_folder='${test_folder}',
     prompt_type='${PROMPT_TYPE}',
@@ -610,8 +662,41 @@ results = read_results(
     prompt_version='${PROMPT_VERSION}',
 )
 sorted_results = sort_results_by_prompt(results)
-print(f'[${test_folder}]  Unique prompts: {len(get_unique_prompts(results))}')
-print_metrics(sorted_results, CLASS_NAMES)
+n_unique = len(get_unique_prompts(results))
+print(f'[${test_folder}]  Unique prompts: {n_unique}')
+print_metrics(sorted_results, _CLASS_NAMES)
+
+# Append to CSV
+csv_path = os.path.join('${EXP_DIR}', 'results_summary.csv')
+file_exists = os.path.isfile(csv_path)
+
+with open(csv_path, 'a', newline='') as f:
+    writer = csv.writer(f)
+    if not file_exists:
+        writer.writerow([
+            'Model', 'DATASET_FOLDER', 'TRAIN_DATASET_FOLDER', 'PREDICTION_SOURCE',
+            'USE_RAG', 'FEATURE_TYPE', 'prompt_version', 'min_classes', 'backbone',
+            'knn_k', '1-pass', '1-majority', 'acc', 'clean-acc', 'Number of unique prompts', 'exp_folder'
+        ])
+    
+    writer.writerow([
+        '${UNSLOTH_MODEL}',
+        '${test_folder}',
+        '${train_src}',
+        '${PREDICTION_SOURCE}',
+        '${USE_RAG_PY}'.upper(),
+        '${FEATURE_TYPE}',
+        '${PROMPT_VERSION}',
+        '${MIN_RAG_CLASSES}',
+        '${BACKBONE}',
+        '${KNN_K}',
+        str(pass_acc(sorted_results)),
+        str(majority_acc(sorted_results)),
+        str(acc(sorted_results)),
+        str(clean_acc(sorted_results, class_names=_CLASS_NAMES)),
+        str(n_unique),
+        '${FT_OUTPUT_DIR}'
+    ])
 "
     done
 }
@@ -621,8 +706,12 @@ step_metrics() {
     log_step "STEP F — Compute metrics for finetuned model"
     cd "$PROJECT_ROOT"
     python -c "
-from src.evaluation.unsloth_eval import read_results, CLASS_NAMES
-from src.evaluation.utils import sort_results_by_prompt, get_unique_prompts, print_metrics
+import os
+import csv
+from src.evaluation.unsloth_eval import read_results, get_class_names
+from src.evaluation.utils import sort_results_by_prompt, get_unique_prompts, print_metrics, pass_acc, majority_acc, acc, clean_acc
+
+_CLASS_NAMES = get_class_names('${DATASET_TYPE}')
 
 results = read_results(
     dataset_folder='${DATASET_FOLDER}',
@@ -641,8 +730,41 @@ results = read_results(
     prompt_version='${PROMPT_VERSION}',
 )
 sorted_results = sort_results_by_prompt(results)
-print(f'Unique prompts: {len(get_unique_prompts(results))}')
-print_metrics(sorted_results, CLASS_NAMES)
+n_unique = len(get_unique_prompts(results))
+print(f'Unique prompts: {n_unique}')
+print_metrics(sorted_results, _CLASS_NAMES)
+
+# Append to CSV
+csv_path = os.path.join('${EXP_DIR}', 'results_summary.csv')
+file_exists = os.path.isfile(csv_path)
+
+with open(csv_path, 'a', newline='') as f:
+    writer = csv.writer(f)
+    if not file_exists:
+        writer.writerow([
+            'Model', 'DATASET_FOLDER', 'TRAIN_DATASET_FOLDER', 'PREDICTION_SOURCE',
+            'USE_RAG', 'FEATURE_TYPE', 'prompt_version', 'min_classes', 'backbone',
+            'knn_k', '1-pass', '1-majority', 'acc', 'clean-acc', 'Number of unique prompts', 'exp_folder'
+        ])
+    
+    writer.writerow([
+        '${UNSLOTH_MODEL}',
+        '${DATASET_FOLDER}',
+        '${OOD_TRAIN_FOLDER}',
+        '${PREDICTION_SOURCE}',
+        '${USE_RAG_PY}'.upper(),
+        '${FEATURE_TYPE}',
+        '${PROMPT_VERSION}',
+        '${MIN_RAG_CLASSES}',
+        '${BACKBONE}',
+        '${KNN_K}',
+        str(pass_acc(sorted_results)),
+        str(majority_acc(sorted_results)),
+        str(acc(sorted_results)),
+        str(clean_acc(sorted_results, class_names=_CLASS_NAMES)),
+        str(n_unique),
+        '${FT_OUTPUT_DIR}'
+    ])
 "
 }
 
@@ -689,9 +811,9 @@ step_generate_train_pkl       # Generate train .pkl if not exists
 [[ "$RUN_FINETUNE" == "true" ]] && step_finetune
 
 # ─── Evaluation (uses the same inference pipeline as run_pipeline) ──────
-# step_generate_test_pkl      # Uncomment if test .pkl not yet generated
-# step_evaluate_finetuned       # Run inference with finetuned model
-# step_metrics                  # Compute and print accuracy metrics
+step_generate_test_pkl      # Uncomment if test .pkl not yet generated
+step_evaluate_finetuned       # Run inference with finetuned model
+step_metrics                  # Compute and print accuracy metrics
 
 # ─── OOD evaluation — loop over OOD_TEST_FOLDERS ────────────────────────
 step_evaluate_ood_all         # Evaluate on each folder in OOD_TEST_FOLDERS

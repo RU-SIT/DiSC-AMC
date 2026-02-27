@@ -77,6 +77,8 @@ RAG_K=10
 MIN_CLASSES=0
 N_COMPONENTS=10
 PROMPT_VERSION="v1"          # v1 (original) | v2 (source-aware)
+DATASET_TYPE="own"           # "own" (flat dir, class in filename) or
+                             # "radioml" (test/{Class}/*.npy, SNR in parent dir)
 ENCODER_WEIGHTS="${EXP_DIR}/dino_classifier.pth"
 PRETRAINED_PATH="${EXP_DIR}/dino_autoencoder.pth"
 CLASSIFIER_PATH="${EXP_DIR}/dino_classifier.pth"
@@ -317,7 +319,8 @@ for ds_row in "${DATASETS[@]}"; do
                             --data_root "$DATA_ROOT" \
                             $emb_flags \
                             $rag_flags \
-                            --prompt_version "$PROMPT_VERSION" || { echo -e "${RED}  Step 6a FAILED${NC}"; continue; }
+                            --prompt_version "$PROMPT_VERSION" \
+                            --dataset_type "$DATASET_TYPE" || { echo -e "${RED}  Step 6a FAILED${NC}"; continue; }
                     fi
                 fi
 
@@ -336,7 +339,8 @@ for ds_row in "${DATASETS[@]}"; do
                         $ood_flag \
                         $emb_flags \
                         $rag_flags \
-                        --prompt_version "$PROMPT_VERSION" || { echo -e "${RED}  Step 6 FAILED${NC}"; continue; }
+                        --prompt_version "$PROMPT_VERSION" \
+                        --dataset_type "$DATASET_TYPE" || { echo -e "${RED}  Step 6 FAILED${NC}"; continue; }
                 fi
 
                 # ── Steps 7+8: per model ─────────────────────────────
@@ -440,11 +444,13 @@ main(
                         CSV_ROW_TMP="${EXP_RUN_DIR}/.csv_row.tmp"
                         python -c "
 import sys
-from src.evaluation.unsloth_eval import read_results, CLASS_NAMES
+from src.evaluation.unsloth_eval import read_results, get_class_names
 from src.evaluation.utils import (
     sort_results_by_prompt, get_unique_prompts, print_metrics,
     acc, clean_acc, pass_acc, majority_acc,
 )
+
+_CLASS_NAMES = get_class_names('${DATASET_TYPE}')
 
 results = read_results(
     dataset_folder='${DATASET_FOLDER}',
@@ -465,13 +471,13 @@ sorted_results = sort_results_by_prompt(results)
 n_unique = len(get_unique_prompts(results))
 
 print(f'Unique prompts: {n_unique}')
-print_metrics(sorted_results, CLASS_NAMES)
+print_metrics(sorted_results, _CLASS_NAMES)
 
 # Write CSV row to temp file (avoids stdout capture issues)
 pass_val  = pass_acc(sorted_results)
 maj_val   = majority_acc(sorted_results)
 acc_val   = acc(sorted_results)
-clean_val = clean_acc(sorted_results, class_names=CLASS_NAMES)
+clean_val = clean_acc(sorted_results, class_names=_CLASS_NAMES)
 
 def fmt(t):
     return '\"' + str(t) + '\"'

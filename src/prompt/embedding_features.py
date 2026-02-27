@@ -286,6 +286,7 @@ def prepare_example_embedding_dicts(
     scaler: StandardScaler,
     batch_size: int = 32,
     verbose: bool = True,
+    dataset_type: str = "own",
 ) -> Tuple[Dict[str, list], Dict[str, list]]:
     """Pre-process example signals into embedding feature dicts.
 
@@ -310,7 +311,7 @@ def prepare_example_embedding_dicts(
         ``{class_name: [(discretized_feature_dict, snr_str), …], …}``
     """
     # Avoid circular import — only need a tiny helper
-    from .generated_dataset import get_dataset_snr
+    from .generated_dataset import _get_snr
 
     feature_names = pca_feature_names(n_components)
 
@@ -320,7 +321,7 @@ def prepare_example_embedding_dicts(
     for cls, paths in example_paths.items():
         for sig_path in paths:
             img_path = signal_path_to_image_path(sig_path, noise_mode)
-            snr = get_dataset_snr(sig_path)
+            snr = _get_snr(sig_path, dataset_type)
             all_image_paths.append(img_path)
             all_meta.append((cls, snr))
 

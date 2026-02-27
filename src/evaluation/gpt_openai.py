@@ -19,6 +19,19 @@ load_dotenv()
 
 CLASS_NAMES = ['4ASK', '4PAM', '8ASK', '16PAM', 'CPFSK', 'DQPSK', 'GFSK', 'GMSK', 'OQPSK', 'OOK']
 
+RADIOML_CLASS_NAMES = [
+    '128APSK', '128QAM', '16APSK', '16PSK', '16QAM', '256QAM',
+    '32APSK', '32PSK', '32QAM', '4ASK', '64APSK', '64QAM',
+    '8ASK', '8PSK', 'AM-DSB-SC', 'AM-DSB-WC', 'AM-SSB-SC', 'AM-SSB-WC',
+    'BPSK', 'FM', 'GMSK', 'OOK', 'OQPSK', 'QPSK',
+]
+
+def get_class_names(dataset_type: str = 'own') -> list:
+    """Return class names for the given dataset type."""
+    if dataset_type == 'radioml':
+        return RADIOML_CLASS_NAMES
+    return CLASS_NAMES
+
 
 def get_openai_response(client: OpenAI, prompt: str, model: str = "o3-mini") -> str:
     """Get response from OpenAI API with retry logic."""

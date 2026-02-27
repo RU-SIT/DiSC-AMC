@@ -37,9 +37,11 @@ EXP_DIR="${PROJECT_ROOT}/exp"
 MODEL_DIR="/mnt/d/Rowan/discrete-llm-amc/models"
 
 # ─── Dataset ─────────────────────────────────────────────────────────────
-DATASET_FOLDER="-30dB"                # folder name under DATA_ROOT
-TRAIN_DATASET_FOLDER="unlabaled_10k"      # OOD: load train .pkl from this folder
+DATASET_FOLDER="unlabeled_10k"                # folder name under DATA_ROOT
+TRAIN_DATASET_FOLDER=""      # OOD: load train .pkl from this folder
                                           # set to "" to use DATASET_FOLDER for both
+DATASET_TYPE="own"           # "own" (flat dir, class in filename) or
+                             # "radioml" (test/{Class}/*.npy, SNR in parent dir)
 
 # ─── Model / backbone ───────────────────────────────────────────────────
 BACKBONE="dino"             # dino | resnet
@@ -59,7 +61,7 @@ FREEZE_ENCODER=false        # true → add --freeze_encoder flag
 FIND_CLOSEST=true           # true → also print closest sample per class
 
 # ─── Prediction & discretisation (Steps 4-6) ────────────────────────────
-PREDICTION_SOURCE="centroid" # dnn | centroid | rf | faiss  (defined in src/naming.py)
+PREDICTION_SOURCE="faiss_filled" # dnn | centroid | rf | faiss | faiss_filled (defined in src/naming.py)
 TOP_K=5
 NOISE_MODE="noisySignal"     # noisySignal | noiselessSignal
 N_BINS=5
@@ -69,7 +71,10 @@ KNN_K=50                     # kNN neighbours for FAISS voting (only when faiss)
 # RAG (Retrieval-Augmented Generation) — optional
 USE_RAG=true                # true → build/use FAISS index for example selection
 RAG_K=10                     # number of nearest neighbours per test signal
-MIN_CLASSES=0                # min distinct classes in RAG results (0 = no constraint)
+MIN_RAG_CLASSES=0            # min distinct classes among RAG *few-shot examples* (widens
+                             # similarity search until N classes appear; 0 = no constraint)
+                             # NOTE: this does NOT affect classification options in the prompt.
+                             # For guaranteed TOP_K distinct options use PREDICTION_SOURCE=faiss_filled
 FEATURE_TYPE="stats"         # stats | embeddings
 PROMPT_VERSION="v1"          # v1 (original) | v2 (source-aware with shortlisting/feature context)
 # If FEATURE_TYPE="embeddings", set these:
@@ -400,7 +405,7 @@ step6_generate_datasets() {
       # RAG flags (optional)
     local rag_flags=""
     if [[ "$USE_RAG" == "true" ]]; then
-        rag_flags="--use_rag --rag_k $RAG_K --min_classes $MIN_CLASSES"
+        rag_flags="--use_rag --rag_k $RAG_K --min_classes $MIN_RAG_CLASSES"
     fi
 
     # OOD flag: when TRAIN_DATASET_FOLDER is set and differs from
@@ -426,7 +431,8 @@ step6_generate_datasets() {
             --data_root "$DATA_ROOT" \
             $emb_flags \
             $rag_flags \
-            --prompt_version "$PROMPT_VERSION"
+            --prompt_version "$PROMPT_VERSION" \
+            --dataset_type "$DATASET_TYPE"
     fi
 
     echo "  6b. Building TEST data (feature_type=${FEATURE_TYPE}) …"
@@ -441,7 +447,8 @@ step6_generate_datasets() {
         $ood_flag \
         $emb_flags \
         $rag_flags \
-        --prompt_version "$PROMPT_VERSION"
+        --prompt_version "$PROMPT_VERSION" \
+        --dataset_type "$DATASET_TYPE"
 }
 
 step7_query_gemini() {
@@ -527,8 +534,10 @@ step8_metrics_gemini() {
     log_step "STEP 8 — Compute metrics (Gemini)"
     cd "$PROJECT_ROOT"
     python -c "
-from src.evaluation.gemini_googleai import read_results, CLASS_NAMES
+from src.evaluation.gemini_googleai import read_results, get_class_names
 from src.evaluation.utils import sort_results_by_prompt, get_unique_prompts, print_metrics
+
+_CLASS_NAMES = get_class_names('${DATASET_TYPE}')
 
 results = read_results(
     dataset_folder='${DATASET_FOLDER}',
@@ -548,7 +557,7 @@ results = read_results(
 )
 sorted_results = sort_results_by_prompt(results)
 print(f'Unique prompts: {len(get_unique_prompts(results))}')
-print_metrics(sorted_results, CLASS_NAMES)
+print_metrics(sorted_results, _CLASS_NAMES)
 "
 }
 
@@ -556,8 +565,10 @@ step8_metrics_openai() {
     log_step "STEP 8 — Compute metrics (OpenAI)"
     cd "$PROJECT_ROOT"
     python -c "
-from src.evaluation.gpt_openai import read_results, CLASS_NAMES
+from src.evaluation.gpt_openai import read_results, get_class_names
 from src.evaluation.utils import sort_results_by_prompt, get_unique_prompts, print_metrics
+
+_CLASS_NAMES = get_class_names('${DATASET_TYPE}')
 
 results = read_results(
     dataset_folder='${DATASET_FOLDER}',
@@ -577,7 +588,7 @@ results = read_results(
 )
 sorted_results = sort_results_by_prompt(results)
 print(f'Unique prompts: {len(get_unique_prompts(results))}')
-print_metrics(sorted_results, CLASS_NAMES)
+print_metrics(sorted_results, _CLASS_NAMES)
 "
 }
 
@@ -585,8 +596,10 @@ step8_metrics_unsloth() {
     log_step "STEP 8 — Compute metrics (Unsloth)"
     cd "$PROJECT_ROOT"
     python -c "
-from src.evaluation.unsloth_eval import read_results, CLASS_NAMES
+from src.evaluation.unsloth_eval import read_results, get_class_names
 from src.evaluation.utils import sort_results_by_prompt, get_unique_prompts, print_metrics
+
+_CLASS_NAMES = get_class_names('${DATASET_TYPE}')
 
 results = read_results(
     dataset_folder='${DATASET_FOLDER}',
@@ -605,7 +618,7 @@ results = read_results(
 )
 sorted_results = sort_results_by_prompt(results)
 print(f'Unique prompts: {len(get_unique_prompts(results))}')
-print_metrics(sorted_results, CLASS_NAMES)
+print_metrics(sorted_results, _CLASS_NAMES)
 "
 }
 
@@ -648,17 +661,17 @@ echo "EXP_RUN_DIR=$EXP_RUN_DIR"
 # step4a_evaluate_test
 step4b_predict_topk
 step5_convert_keys
-step6_generate_datasets
+# step6_generate_datasets
 
 # Uncomment the provider(s) you want to run:
 # step7_query_gemini
 # step7_query_openai
-step7_query_unsloth
+# step7_query_unsloth
 
 # Uncomment to compute metrics from saved results:
 # step8_metrics_gemini
 # step8_metrics_openai
-step8_metrics_unsloth
+# step8_metrics_unsloth
 
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"

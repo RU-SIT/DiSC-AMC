@@ -125,13 +125,32 @@ from src.prompt.templates import (
 # Embedding imports — lazy-loaded via _get_embedding_helpers() to avoid
 # hard dependency on torch/torchvision when only using statistical features.
 
+# ── Dataset-type-aware label / SNR extraction ───────────────────────────────
+
+def _get_label(signal_path: str, dataset_type: str = "own") -> str:
+    """Extract class label.  RadioML: from dirname.  Own: from filename prefix."""
+    if dataset_type == "radioml":
+        return os.path.basename(os.path.dirname(signal_path))
+    return os.path.basename(signal_path).split('_')[0]
+
+
+def _get_snr(signal_path: str, dataset_type: str = "own") -> str:
+    """Extract SNR.  RadioML: from ``snr_*db`` ancestor dir.  Own: from filename."""
+    if dataset_type == "radioml":
+        for part in signal_path.replace("\\", "/").split("/"):
+            if part.startswith("snr_"):
+                return part.replace("snr_", "").replace("db", "")
+        return "0"
+    return os.path.basename(signal_path).split('_')[1].replace('db','').replace('dB','')
+
+
+# Keep old names as thin wrappers for backward compatibility.
 def get_dataset_label(signal_path):
-    class_names = os.path.basename(signal_path).split('_')[0]
-    return class_names
+    return _get_label(signal_path, dataset_type="own")
 
 def get_dataset_snr(signal_path):
-    snrs = os.path.basename(signal_path).split('_')[1].replace('db','').replace('dB','')
-    return snrs
+    return _get_snr(signal_path, dataset_type="own")
+
 
 def get_dataset_random_example_paths(example_paths, classes, label, max_examples=10):
     new_example_paths = {}
@@ -142,7 +161,24 @@ def get_dataset_random_example_paths(example_paths, classes, label, max_examples
 
     return example_dict
 
-def create_dataset_example_paths(base_dir, noise_mode='noiselessSignal'):
+def create_dataset_example_paths(base_dir, noise_mode='noiselessSignal', dataset_type='own'):
+    """Build a ``{class: [path, …]}`` dict of few-shot example signals.
+
+    For *radioml*, examples are auto-discovered from the train class subdirs.
+    For *own*, the hardcoded curated examples are returned.
+    """
+    if dataset_type == "radioml":
+        # Pick one random example per class from the train split.
+        example_paths = {}
+        for class_dir in sorted(glob(os.path.join(base_dir, "train", "*"))):
+            if os.path.isdir(class_dir):
+                class_name = os.path.basename(class_dir)
+                samples = glob(os.path.join(class_dir, "*.npy"))
+                if samples:
+                    example_paths[class_name] = [random.choice(samples)]
+        return example_paths
+
+    # ── "own" dataset: curated hardcoded examples ────────────────────────
     # example_paths = {
     #     'OOK': [f'{base_dir}/train/{noise_mode}/OOK_2.17dB__0379_20250627_150438.npy'],
     #     '4ASK': [f'{base_dir}/train/{noise_mode}/4ASK_6.58dB__0216_20250627_150737.npy'],
@@ -184,19 +220,27 @@ def create_dataset_example_paths(base_dir, noise_mode='noiselessSignal'):
     
     return example_paths
 
-def dataset_example_maker(base_dir="../../data/own/unlabeled_10k/", mode='train', noise_mode='noiselessSignal'):
-    # Load signal paths
-    pattern = f"{base_dir}/{mode}/{noise_mode}/*.npy"
+def dataset_example_maker(base_dir="../../data/own/unlabeled_10k/", mode='train',
+                          noise_mode='noiselessSignal', dataset_type='own'):
+    """Discover signals and build example dicts.
+
+    For *radioml*, globs ``{mode}/*/*.npy`` (class subdirs).
+    For *own*, globs ``{mode}/{noise_mode}/*.npy`` (flat dir).
+    """
+    if dataset_type == "radioml":
+        pattern = f"{base_dir}/{mode}/*/*.npy"
+    else:
+        pattern = f"{base_dir}/{mode}/{noise_mode}/*.npy"
     signal_paths = glob(pattern)
     
-    label_list = [get_dataset_label(sig) for sig in signal_paths]
-    snr_list = [get_dataset_snr(sig) for sig in signal_paths]
+    label_list = [_get_label(sig, dataset_type) for sig in signal_paths]
+    snr_list = [_get_snr(sig, dataset_type) for sig in signal_paths]
 
     unique_classes = list(set(label_list))
     unique_snrs = list(set(snr_list))
 
-    # example_paths = load_from_json('../../data/RadioML/example_paths.json')
-    example_paths = create_dataset_example_paths(base_dir, noise_mode=noise_mode)
+    example_paths = create_dataset_example_paths(base_dir, noise_mode=noise_mode,
+                                                 dataset_type=dataset_type)
     example_dict = get_dataset_random_example_paths(example_paths, unique_classes, unique_classes[0], max_examples=len(unique_classes))
     signal_paths = [signal_path for signal_path in signal_paths if signal_path not in example_paths.values()]
 
@@ -220,6 +264,7 @@ def get_processed_data(
     ktop_instruction_template: Optional[str] = None,
     ktop_question_template: Optional[str] = None,
     ktop_end_text: Optional[str] = None,
+    dataset_type: str = "own",
 ) -> Dict[str, Any]:
     """
     Processes signal data from file paths to generate features, prompts, and metadata.
@@ -270,7 +315,7 @@ def get_processed_data(
 
     # Load signal data from the specified paths
     signals_data: List[np.ndarray] = [split_real_imaginary(load_npy_file(path)) for path in signal_paths]
-    signals_snr: List[Union[int, float]] = [get_dataset_snr(path) for path in signal_paths]
+    signals_snr: List[Union[int, float]] = [_get_snr(path, dataset_type) for path in signal_paths]
 
     # Calculate statistical features for each loaded signal
     signal_summaries: List[Dict[str, Union[float, np.ndarray, int]]] = [
@@ -311,7 +356,7 @@ def get_processed_data(
     question_template_format: List[str] = [options_str]
     instruction_template_format: List[str] = []
     all_example_dict = {
-        k: [(split_real_imaginary(load_npy_file(p)), get_dataset_snr(p)) for p in v]
+        k: [(split_real_imaginary(load_npy_file(p)), _get_snr(p, dataset_type)) for p in v]
         for k, v in example_paths.items()
     }
 
@@ -334,7 +379,7 @@ def get_processed_data(
             )
         return reduce_example_dict(
             all_example_dict,
-            get_dataset_label(signal_paths[i]),
+            _get_label(signal_paths[i], dataset_type),
             max_examples=10,
         )
 
@@ -511,6 +556,7 @@ def get_embedding_processed_data(
     ktop_instruction_template: Optional[str] = None,
     ktop_question_template: Optional[str] = None,
     ktop_end_text: Optional[str] = None,
+    dataset_type: str = "own",
 ) -> Dict[str, Any]:
     """Process signals using encoder embeddings instead of statistical features.
 
@@ -602,7 +648,7 @@ def get_embedding_processed_data(
             s_ex, d_ex = prepare_example_embedding_dicts(
                 encoder, device, rag_example_paths, noise_mode,
                 n_components, pca, discretizers, scaler, batch_size,
-                verbose=False,
+                verbose=False, dataset_type=dataset_type,
             )
             return s_ex, d_ex
 
@@ -617,6 +663,7 @@ def get_embedding_processed_data(
         scaled_ex, discret_ex = prepare_example_embedding_dicts(
             encoder, device, example_paths, noise_mode,
             n_components, pca, discretizers, scaler, batch_size,
+            dataset_type=dataset_type,
         )
         rag_scaled_examples = None
         rag_discret_examples = None
@@ -630,14 +677,14 @@ def get_embedding_processed_data(
         if rag_scaled_examples is not None:
             return rag_scaled_examples[i]
         return reduce_example_dict(
-            scaled_ex, get_dataset_label(signal_paths[i]), max_examples=10,
+            scaled_ex, _get_label(signal_paths[i], dataset_type), max_examples=10,
         )
 
     def _get_discret_ex(i: int):
         if rag_discret_examples is not None:
             return rag_discret_examples[i]
         return reduce_example_dict(
-            discret_ex, get_dataset_label(signal_paths[i]), max_examples=10,
+            discret_ex, _get_label(signal_paths[i], dataset_type), max_examples=10,
         )
 
     old_context_prompts: List[str] = [
@@ -751,6 +798,7 @@ def build_train(
     rag_k: int = 10,
     min_classes: int = 0,
     prompt_version: str = "v1",
+    dataset_type: str = "own",
 ) -> None:
     """Build and save the TRAIN dataset ``.pkl``.
 
@@ -774,6 +822,7 @@ def build_train(
         base_dir=base_dir + "/",
         mode="train",
         noise_mode=noise_mode,
+        dataset_type=dataset_type,
     )
 
     print(f"Train signals: {len(train_signal_paths)} | Classes: {len(set(train_labels))}")
@@ -817,6 +866,7 @@ def build_train(
             add_context=True,
             n_bins=n_bins,
             min_classes=min_classes,
+            dataset_type=dataset_type,
         )
 
     out_path = os.path.join(
@@ -864,6 +914,7 @@ def build_test(
     rag_k: int = 10,
     min_classes: int = 0,
     prompt_version: str = "v1",
+    dataset_type: str = "own",
 ) -> None:
     """Build and save the TEST dataset ``.pkl``.
 
@@ -911,18 +962,25 @@ def build_test(
         base_dir=train_base_dir + "/",
         mode="train",
         noise_mode=noise_mode,
+        dataset_type=dataset_type,
     )
 
     # ── Gather test signal paths ─────────────────────────────────────────
-    test_signal_paths = glob(
-        os.path.join(base_dir, "test", noise_mode, "*.npy")
-    )
-    if not test_signal_paths:
-        raise FileNotFoundError(
-            f"No .npy files in {os.path.join(base_dir, 'test', noise_mode)}"
+    if dataset_type == "radioml":
+        test_signal_paths = glob(
+            os.path.join(base_dir, "test", "*", "*.npy")
         )
-    test_labels = [get_dataset_label(p) for p in test_signal_paths]
-    test_snrs = [get_dataset_snr(p) for p in test_signal_paths]
+    else:
+        test_signal_paths = glob(
+            os.path.join(base_dir, "test", noise_mode, "*.npy")
+        )
+    if not test_signal_paths:
+        search_dir = os.path.join(base_dir, "test", "*" if dataset_type == "radioml" else noise_mode)
+        raise FileNotFoundError(
+            f"No .npy files in {search_dir}"
+        )
+    test_labels = [_get_label(p, dataset_type) for p in test_signal_paths]
+    test_snrs = [_get_snr(p, dataset_type) for p in test_signal_paths]
     print(f"Test signals: {len(test_signal_paths)} | Classes: {len(set(test_labels))}")
 
     # ── Load top-k predictions (optional for OOD) ──────────────────────
@@ -992,6 +1050,7 @@ def build_test(
             ktop_instruction_template=_v2_inst_disc,
             ktop_question_template=_v2_q,
             ktop_end_text=_v2_end,
+            dataset_type=dataset_type,
         )
     else:
         feature_names = feature_names or DEFAULT_FEATURE_NAMES
@@ -1013,6 +1072,7 @@ def build_test(
             ktop_instruction_template=_v2_inst_disc,
             ktop_question_template=_v2_q,
             ktop_end_text=_v2_end,
+            dataset_type=dataset_type,
         )
 
     out_path = os.path.join(
@@ -1063,8 +1123,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--noise_mode", type=str, default="noisySignal",
-        choices=["noisySignal", "noiselessSignal"],
-        help="Signal variant to use (default: noisySignal).",
+        help="Signal variant or RadioML SNR directory name (default: noisySignal).",
     )
     parser.add_argument(
         "--n_bins", type=int, default=5,
@@ -1141,6 +1200,13 @@ if __name__ == "__main__":
              "with SHORTLISTING METHOD and FEATURE DESCRIPTION context). "
              "Default: v1.",
     )
+    parser.add_argument(
+        "--dataset_type", type=str, default="own",
+        choices=["own", "radioml"],
+        help="Dataset layout type: 'own' (flat test/noisySignal/*.npy with "
+             "class in filename) or 'radioml' (test/{Class}/*.npy with "
+             "SNR in parent dir).  Default: own.",
+    )
 
     args = parser.parse_args()
 
@@ -1161,6 +1227,7 @@ if __name__ == "__main__":
             rag_k=args.rag_k,
             min_classes=args.min_classes,
             prompt_version=args.prompt_version,
+            dataset_type=args.dataset_type,
         )
     elif args.mode == "test":
         build_test(
@@ -1180,4 +1247,5 @@ if __name__ == "__main__":
             rag_k=args.rag_k,
             min_classes=args.min_classes,
             prompt_version=args.prompt_version,
+            dataset_type=args.dataset_type,
         )
