@@ -104,22 +104,28 @@ def get_source(name: str) -> PredictionSource:
 
 # ── Filename builders ────────────────────────────────────────────────────────
 
-def raw_json_name(source: str, top_k: int) -> str:
+def raw_json_name(source: str, top_k: int, backbone: str = "dino") -> str:
     """Filename for the ``.png``-keyed prediction JSON (inference output).
 
     >>> raw_json_name("centroid", 5)
     'top5_centroid_predictions.json'
     """
-    return get_source(source).raw_json.format(topk=top_k)
+    name = get_source(source).raw_json.format(topk=top_k)
+    if backbone != "dino":
+        name = name.replace("_predictions.json", f"_{backbone}_predictions.json")
+    return name
 
 
-def converted_json_name(source: str, top_k: int) -> str:
+def converted_json_name(source: str, top_k: int, backbone: str = "dino") -> str:
     """Filename for the ``.npy``-keyed prediction JSON (after conversion).
 
     >>> converted_json_name("centroid", 5)
     'ntop5_centroid_predictions.json'
     """
-    return get_source(source).converted_json.format(topk=top_k)
+    name = get_source(source).converted_json.format(topk=top_k)
+    if backbone != "dino":
+        name = name.replace("_predictions.json", f"_{backbone}_predictions.json")
+    return name
 
 
 def train_pkl_name(

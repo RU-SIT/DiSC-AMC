@@ -65,7 +65,7 @@ KNN_K=50
 
 # Centroid / FAISS paths (used if running data generation steps)
 CENTROID_OUTPUT="${DATA_ROOT}/${TRAIN_DATASET_FOLDER:-$DATASET_FOLDER}/train/class_centers.json"
-FAISS_INDEX_PATH="${DATA_ROOT}/${TRAIN_DATASET_FOLDER:-$DATASET_FOLDER}/train/faiss_knn"
+FAISS_INDEX_PATH="${DATA_ROOT}/${TRAIN_DATASET_FOLDER:-$DATASET_FOLDER}/train/faiss_knn_${BACKBONE}"
 
 # ─── Feature type ───────────────────────────────────────────────────────
 USE_RAG=true               # true → build/use FAISS index for example selection
@@ -141,12 +141,14 @@ OOD_TRAIN_FOLDER=""
 if [[ -n "$TRAIN_DATASET_FOLDER" && "$TRAIN_DATASET_FOLDER" != "$DATASET_FOLDER" ]]; then
     OOD_TRAIN_FOLDER="$TRAIN_DATASET_FOLDER"
     CENTROID_OUTPUT="${DATA_ROOT}/${TRAIN_DATASET_FOLDER}/train/class_centers.json"
-    FAISS_INDEX_PATH="${DATA_ROOT}/${TRAIN_DATASET_FOLDER}/train/faiss_knn"
+    FAISS_INDEX_PATH="${DATA_ROOT}/${TRAIN_DATASET_FOLDER}/train/faiss_knn_${BACKBONE}"
 fi
 
 # ─── Derived prediction JSON filenames ───────────────────────────────────
-RAW_JSON="top${TOP_K}_${PREDICTION_SOURCE}_predictions.json"
-CONVERTED_JSON="ntop${TOP_K}_${PREDICTION_SOURCE}_predictions.json"
+_BB_TAG=""
+[[ "$BACKBONE" != "dino" ]] && _BB_TAG="_${BACKBONE}"
+RAW_JSON="top${TOP_K}_${PREDICTION_SOURCE}${_BB_TAG}_predictions.json"
+CONVERTED_JSON="ntop${TOP_K}_${PREDICTION_SOURCE}${_BB_TAG}_predictions.json"
 
 # ─── Embedding / RAG vars for evaluation ─────────────────────────────────
 N_COMPONENTS_EVAL=0
@@ -175,6 +177,9 @@ _build_pkl_tag() {
     if [[ -n "$OOD_TRAIN_FOLDER" ]]; then
         parts+=("ood")
     fi
+    if [[ "$BACKBONE" != "dino" ]]; then
+        parts+=("$BACKBONE")
+    fi
     if [[ "$FEATURE_TYPE" == "embeddings" && "$N_COMPONENTS" -gt 0 ]]; then
         parts+=("emb${N_COMPONENTS}")
     fi
@@ -195,7 +200,11 @@ fi
 TRAIN_PKL_DIR="${DATA_ROOT}/${TRAIN_DATASET_FOLDER:-$DATASET_FOLDER}"
 TRAIN_PKL_PATH="${TRAIN_PKL_DIR}/${TRAIN_PKL_NAME}"
 
-# ─── Build TEST pkl tag (includes rag + prompt version, unlike train) ────
+# ─── Build TEST pkl tag (must match naming used by generated_dataset.py) ──
+# NOTE: generated_dataset.py calls test_pkl_name() with legacy positional args
+# which only includes prediction_source + feature_tag (emb).  RAG and
+# prompt_version are NOT encoded in the pkl filename — only in the
+# *responses* JSON name created by the evaluation scripts.
 _build_test_pkl_tag() {
     local parts=()
     if [[ "$PREDICTION_SOURCE" != "dnn" ]]; then
@@ -204,14 +213,11 @@ _build_test_pkl_tag() {
     if [[ -n "$OOD_TRAIN_FOLDER" ]]; then
         parts+=("ood")
     fi
+    if [[ "$BACKBONE" != "dino" ]]; then
+        parts+=("$BACKBONE")
+    fi
     if [[ "$FEATURE_TYPE" == "embeddings" && "$N_COMPONENTS" -gt 0 ]]; then
         parts+=("emb${N_COMPONENTS}")
-    fi
-    if [[ "$USE_RAG" == "true" && "$RAG_K" -gt 0 ]]; then
-        parts+=("rag${RAG_K}")
-    fi
-    if [[ "$PROMPT_VERSION" != "v1" && -n "$PROMPT_VERSION" ]]; then
-        parts+=("p${PROMPT_VERSION}")
     fi
     local IFS="_"
     echo "${parts[*]}"
@@ -554,6 +560,7 @@ main(
     inference_batch_size=${INFERENCE_BATCH_SIZE},
     max_new_tokens=${MAX_NEW_TOKENS},
     prompt_version='${PROMPT_VERSION}',
+    backbone='${BACKBONE}',
 )
 "
 }
@@ -593,20 +600,41 @@ step_evaluate_ood_all() {
         cd "$PROJECT_ROOT"
 
         # ── 1. Generate test pkl ─────────────────────────────────────
-        echo "  Generating test pkl for ${test_folder} …"
-        python -m src.prompt.generated_dataset \
-            --mode test \
-            --dataset_folder="$test_folder" \
-            --noise_mode "$NOISE_MODE" \
-            --n_bins "$N_BINS" \
-            --top_k "$TOP_K" \
-            --prediction_source "$PREDICTION_SOURCE" \
-            --data_root "$DATA_ROOT" \
-            --train_dataset_folder="$train_src" \
-            $emb_flags \
-            $rag_flags \
-            --prompt_version "$PROMPT_VERSION" \
-            --dataset_type "$DATASET_TYPE"
+        # Build the expected filename (must match generated_dataset.py naming)
+        local ood_parts=()
+        [[ "$PREDICTION_SOURCE" != "dnn" ]] && ood_parts+=("$PREDICTION_SOURCE")
+        [[ "$BACKBONE" != "dino" ]] && ood_parts+=("$BACKBONE")
+        [[ "$FEATURE_TYPE" == "embeddings" && "$N_COMPONENTS" -gt 0 ]] && ood_parts+=("emb${N_COMPONENTS}")
+        local ood_tag=""
+        if [[ ${#ood_parts[@]} -gt 0 ]]; then
+            local IFS="_"; ood_tag="${ood_parts[*]}"; unset IFS
+        fi
+        local ood_pkl_name
+        if [[ -n "$ood_tag" ]]; then
+            ood_pkl_name="test_${ood_tag}_${NOISE_MODE}_${N_BINS}_${TOP_K}_data.pkl"
+        else
+            ood_pkl_name="test_${NOISE_MODE}_${N_BINS}_${TOP_K}_data.pkl"
+        fi
+        local ood_pkl_path="${DATA_ROOT}/${test_folder}/${ood_pkl_name}"
+
+        if [[ -f "$ood_pkl_path" ]]; then
+            echo "  Test .pkl already exists: ${ood_pkl_path} — skipping."
+        else
+            echo "  Generating test pkl for ${test_folder} …"
+            python -m src.prompt.generated_dataset \
+                --mode test \
+                --dataset_folder="$test_folder" \
+                --noise_mode "$NOISE_MODE" \
+                --n_bins "$N_BINS" \
+                --top_k "$TOP_K" \
+                --prediction_source "$PREDICTION_SOURCE" \
+                --data_root "$DATA_ROOT" \
+                --train_dataset_folder="$train_src" \
+                $emb_flags \
+                $rag_flags \
+                --prompt_version "$PROMPT_VERSION" \
+                --dataset_type "$DATASET_TYPE"
+        fi
 
         # ── 2. Run inference ─────────────────────────────────────────
         echo "  Running inference …"
@@ -633,6 +661,7 @@ main(
     inference_batch_size=${INFERENCE_BATCH_SIZE},
     max_new_tokens=${MAX_NEW_TOKENS},
     prompt_version='${PROMPT_VERSION}',
+    backbone='${BACKBONE}',
 )
 "
 
@@ -660,6 +689,7 @@ results = read_results(
     rag_k=${RAG_K_EVAL},
     output_dir='${FT_OUTPUT_DIR}',
     prompt_version='${PROMPT_VERSION}',
+    backbone='${BACKBONE}',
 )
 sorted_results = sort_results_by_prompt(results)
 n_unique = len(get_unique_prompts(results))
@@ -728,6 +758,7 @@ results = read_results(
     rag_k=${RAG_K_EVAL},
     output_dir='${FT_OUTPUT_DIR}',
     prompt_version='${PROMPT_VERSION}',
+    backbone='${BACKBONE}',
 )
 sorted_results = sort_results_by_prompt(results)
 n_unique = len(get_unique_prompts(results))

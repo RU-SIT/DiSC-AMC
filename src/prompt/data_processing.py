@@ -684,6 +684,9 @@ def reduce_example_dict(
             key_to_pool_indices[key] = []
         key_to_pool_indices[key].append(idx)
 
+    indices_to_remove_from_pool: List[int] = []
+    keys_represented: set = {label}
+
     for key in other_keys:
         if num_selected >= max_examples:
             break

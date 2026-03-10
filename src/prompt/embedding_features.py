@@ -76,30 +76,44 @@ _DEFAULT_TRANSFORM = transforms.Compose([
     transforms.ToTensor(),
 ])
 
+_DENOMAE_TRANSFORM = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+])
+
 
 # ── Path mapping ─────────────────────────────────────────────────────────────
 
 def signal_path_to_image_path(signal_path: str, noise_mode: str) -> str:
     """Convert a ``.npy`` signal path to its ``.png`` constellation image path.
 
-    The signal and image directories are siblings under the same split root::
+    **Own dataset** — signal and image directories are siblings::
 
         data/own/unlabeled_10k/test/
         ├── noisySignal/   ← .npy signals
         └── noisyImg/      ← .png constellation images
 
-    Example
-    -------
-    >>> signal_path_to_image_path(
-    ...     "data/own/unlabeled_10k/test/noisySignal/OOK_2.17dB__0379.npy",
-    ...     "noisySignal",
-    ... )
-    'data/own/unlabeled_10k/test/noisyImg/OOK_2.17dB__0379.png'
+    **RadioML** (noise_mode starts with ``snr_``) — images are in an ``img/``
+    dir under the same split, with ``{Class}_{stem}.png`` naming::
+
+        data/RadioML/snr_0db/test/
+        ├── 128APSK/sample_0.npy
+        └── img/128APSK_sample_0.png
     """
+    # RadioML path: snr_* noise_modes
+    if noise_mode.startswith("snr_"):
+        class_dir = os.path.dirname(signal_path)       # .../test/128APSK
+        split_root = os.path.dirname(class_dir)         # .../test
+        class_name = os.path.basename(class_dir)
+        stem = os.path.splitext(os.path.basename(signal_path))[0]
+        return os.path.join(split_root, "img", f"{class_name}_{stem}.png")
+
+    # Own dataset path
     if noise_mode not in NOISE_MODE_TO_IMG:
         raise ValueError(
             f"Unknown noise_mode={noise_mode!r}. "
-            f"Expected one of {list(NOISE_MODE_TO_IMG)}."
+            f"Expected one of {list(NOISE_MODE_TO_IMG)} or 'snr_*' for RadioML."
         )
     img_dir = NOISE_MODE_TO_IMG[noise_mode]
     parent = os.path.dirname(signal_path)   # .../test/noisySignal
@@ -149,6 +163,7 @@ def extract_embeddings_from_paths(
     image_paths: List[str],
     batch_size: int = 32,
     verbose: bool = True,
+    transform: Optional[transforms.Compose] = None,
 ) -> np.ndarray:
     """Run every image in *image_paths* through *encoder*.
 
@@ -177,7 +192,10 @@ def extract_embeddings_from_paths(
         desc="Extracting embeddings",
         disable=not verbose,
     ):
-        batch = _load_images_as_batch(image_paths[start : start + batch_size])
+        batch = _load_images_as_batch(
+            image_paths[start : start + batch_size],
+            transform=transform or _DEFAULT_TRANSFORM,
+        )
         with torch.no_grad():
             emb = encoder(batch.to(device))            # (B, latent_dim) or (B, C, H, W)
         # Handle 4D output (ResNet feature maps) → pool + flatten
@@ -287,6 +305,7 @@ def prepare_example_embedding_dicts(
     batch_size: int = 32,
     verbose: bool = True,
     dataset_type: str = "own",
+    transform: Optional[transforms.Compose] = None,
 ) -> Tuple[Dict[str, list], Dict[str, list]]:
     """Pre-process example signals into embedding feature dicts.
 
@@ -331,6 +350,7 @@ def prepare_example_embedding_dicts(
     # ── Batch-extract embeddings → PCA → scale / discretize ──────────────
     embeddings = extract_embeddings_from_paths(
         encoder, device, all_image_paths, batch_size, verbose=verbose,
+        transform=transform,
     )
     reduced = pca.transform(embeddings)
 
@@ -361,7 +381,7 @@ def load_encoder_for_embeddings(
     weights_path: str,
     num_classes: int = 10,
     device: Optional[torch.device] = None,
-) -> Tuple[nn.Module, torch.device]:
+) -> Tuple[nn.Module, torch.device, transforms.Compose]:
     """Load a trained classifier and return its encoder sub-module.
 
     Dynamically imports :class:`ImageClassifier` from the
@@ -393,8 +413,33 @@ def load_encoder_for_embeddings(
         backbone=backbone, num_classes=num_classes,
     )
     state = torch.load(weights_path, map_location="cpu", weights_only=False)
+
+    if backbone == "denomae":
+        state = {k.replace("module.", ""): v for k, v in state.items()}
+        remapped = {}
+        for k, v in state.items():
+            if k.startswith("encoder."):
+                remapped["encoder.denomae." + k[len("encoder."):]] = v
+            elif k.startswith("classification_head."):
+                remapped["classifier_head." + k[len("classification_head."):]] = v
+        state = remapped
+
     model.load_state_dict(state, strict=False)
 
     encoder = model.encoder
     encoder.to(device).eval()
-    return encoder, device
+
+    if backbone == "denomae":
+        # Wrap the raw DenoMAE2 so that __call__ extracts patch features
+        # via forward_encoder (DenoMAE2.forward requires a targets arg).
+        _raw = encoder
+
+        class _DenoMAEEncoderWrapper(nn.Module):
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                features, _, _ = _raw.forward_encoder(x, mask_ratio=0)
+                return features[:, 1:, :].mean(dim=1)
+
+        encoder = _DenoMAEEncoderWrapper().to(device).eval()
+
+    t = _DENOMAE_TRANSFORM if backbone == "denomae" else _DEFAULT_TRANSFORM
+    return encoder, device, t

@@ -112,6 +112,9 @@ _build_exp_dir_name() {
     if [[ -n "$OOD_TRAIN_FOLDER" ]]; then
         [[ -n "$feat_tag" ]] && feat_tag+="_"; feat_tag+="ood"
     fi
+    if [[ "$BACKBONE" != "dino" ]]; then
+        [[ -n "$feat_tag" ]] && feat_tag+="_"; feat_tag+="${BACKBONE}"
+    fi
     if [[ "$FEATURE_TYPE" == "embeddings" && "$N_COMPONENTS" -gt 0 ]]; then
         [[ -n "$feat_tag" ]] && feat_tag+="_"; feat_tag+="emb${N_COMPONENTS}"
     fi
@@ -136,10 +139,12 @@ _recompute_derived() {
     fi
 
     CENTROID_OUTPUT="${TRAIN_PATH}/train/class_centers.json"
-    FAISS_INDEX_PATH="${TRAIN_PATH}/train/faiss_knn"
+    FAISS_INDEX_PATH="${TRAIN_PATH}/train/faiss_knn_${BACKBONE}"
 
-    RAW_JSON="top${TOP_K}_${PREDICTION_SOURCE}_predictions.json"
-    CONVERTED_JSON="ntop${TOP_K}_${PREDICTION_SOURCE}_predictions.json"
+    local _bb_tag=""
+    [[ "$BACKBONE" != "dino" ]] && _bb_tag="_${BACKBONE}"
+    RAW_JSON="top${TOP_K}_${PREDICTION_SOURCE}${_bb_tag}_predictions.json"
+    CONVERTED_JSON="ntop${TOP_K}_${PREDICTION_SOURCE}${_bb_tag}_predictions.json"
 
     OOD_TRAIN_FOLDER=""
     if [[ -n "$TRAIN_DATASET_FOLDER" && "$TRAIN_DATASET_FOLDER" != "$DATASET_FOLDER" ]]; then
@@ -300,6 +305,7 @@ for ds_row in "${DATASETS[@]}"; do
 
                 # Build pkl filenames to check for existence
                 PKL_TAG="${PREDICTION_SOURCE}"
+                [[ "$BACKBONE" != "dino" ]] && PKL_TAG+="_${BACKBONE}"
                 [[ "$FEATURE_TYPE" == "embeddings" ]] && PKL_TAG+="_emb${N_COMPONENTS}"
                 TRAIN_PKL_FILE="${TRAIN_PATH}/train_${PKL_TAG}_${NOISE_MODE}_${N_BINS}_${TOP_K}_data.pkl"
                 TEST_PKL_FILE="${DATASET_PATH}/test_${PKL_TAG}_${NOISE_MODE}_${N_BINS}_${TOP_K}_data.pkl"
@@ -437,6 +443,7 @@ main(
     cache_dir='${MODEL_DIR}',
     data_root='${DATA_ROOT}',
     output_dir='${EXP_RUN_DIR}',
+    backbone='${BACKBONE}',
 )
 " && {
                         # ── Step 8: metrics → terminal + CSV ─────────
@@ -466,6 +473,7 @@ results = read_results(
     use_rag=${USE_RAG_PY},
     rag_k=${RAG_K_EVAL},
     output_dir='${EXP_RUN_DIR}',
+    backbone='${BACKBONE}',
 )
 sorted_results = sort_results_by_prompt(results)
 n_unique = len(get_unique_prompts(results))

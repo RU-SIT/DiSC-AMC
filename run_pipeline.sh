@@ -37,8 +37,8 @@ EXP_DIR="${PROJECT_ROOT}/exp"
 MODEL_DIR="/mnt/d/Rowan/discrete-llm-amc/models"
 
 # ─── Dataset ─────────────────────────────────────────────────────────────
-DATASET_FOLDER="unlabeled_10k"                # folder name under DATA_ROOT
-TRAIN_DATASET_FOLDER=""      # OOD: load train .pkl from this folder
+DATASET_FOLDER="-11_-15dB"                # folder name under DATA_ROOT
+TRAIN_DATASET_FOLDER="unlabeled_10k"      # OOD: load train .pkl from this folder
                                           # set to "" to use DATASET_FOLDER for both
 DATASET_TYPE="own"           # "own" (flat dir, class in filename) or
                              # "radioml" (test/{Class}/*.npy, SNR in parent dir)
@@ -107,14 +107,14 @@ if [[ -n "$TRAIN_DATASET_FOLDER" && "$TRAIN_DATASET_FOLDER" != "$DATASET_FOLDER"
 fi
 
 # FAISS index path (for PREDICTION_SOURCE=faiss)
-FAISS_INDEX_PATH="${DATASET_PATH}/train/faiss_knn"
+FAISS_INDEX_PATH="${DATASET_PATH}/train/faiss_knn_${BACKBONE}"
 if [[ -n "$TRAIN_DATASET_FOLDER" && "$TRAIN_DATASET_FOLDER" != "$DATASET_FOLDER" ]]; then
-    FAISS_INDEX_PATH="${DATA_ROOT}/${TRAIN_DATASET_FOLDER}/train/faiss_knn"
+    FAISS_INDEX_PATH="${DATA_ROOT}/${TRAIN_DATASET_FOLDER}/train/faiss_knn_${BACKBONE}"
 fi
 
 # Derived filenames
-RAW_JSON="top${TOP_K}_${PREDICTION_SOURCE}_predictions.json"
-CONVERTED_JSON="ntop${TOP_K}_${PREDICTION_SOURCE}_predictions.json"
+RAW_JSON="top${TOP_K}_${PREDICTION_SOURCE}_${BACKBONE}_predictions.json"
+CONVERTED_JSON="ntop${TOP_K}_${PREDICTION_SOURCE}_${BACKBONE}_predictions.json"
 
 # Derived OOD / embedding vars for evaluation steps
 OOD_TRAIN_FOLDER=""
@@ -472,6 +472,7 @@ main(
     rag_k=${RAG_K_EVAL},
     output_dir='${EXP_RUN_DIR}',
     prompt_version='${PROMPT_VERSION}',
+    backbone='${BACKBONE}',
 )
 "
 }
@@ -497,6 +498,7 @@ main(
     rag_k=${RAG_K_EVAL},
     output_dir='${EXP_RUN_DIR}',
     prompt_version='${PROMPT_VERSION}',
+    backbone='${BACKBONE}',
 )
 "
 }
@@ -526,6 +528,7 @@ main(
     inference_batch_size=${INFERENCE_BATCH_SIZE},
     max_new_tokens=${MAX_NEW_TOKENS},
     prompt_version='${PROMPT_VERSION}',
+    backbone='${BACKBONE}',
 )
 "
 }
@@ -554,6 +557,7 @@ results = read_results(
     rag_k=${RAG_K_EVAL},
     output_dir='${EXP_RUN_DIR}',
     prompt_version='${PROMPT_VERSION}',
+    backbone='${BACKBONE}',
 )
 sorted_results = sort_results_by_prompt(results)
 print(f'Unique prompts: {len(get_unique_prompts(results))}')
@@ -585,6 +589,7 @@ results = read_results(
     rag_k=${RAG_K_EVAL},
     output_dir='${EXP_RUN_DIR}',
     prompt_version='${PROMPT_VERSION}',
+    backbone='${BACKBONE}',
 )
 sorted_results = sort_results_by_prompt(results)
 print(f'Unique prompts: {len(get_unique_prompts(results))}')
@@ -615,6 +620,7 @@ results = read_results(
     use_rag=${USE_RAG_PY},
     rag_k=${RAG_K_EVAL},
     output_dir='${EXP_RUN_DIR}',
+    backbone='${BACKBONE}',
 )
 sorted_results = sort_results_by_prompt(results)
 print(f'Unique prompts: {len(get_unique_prompts(results))}')

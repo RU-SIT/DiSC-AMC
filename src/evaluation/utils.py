@@ -192,7 +192,8 @@ def per_class_acc(results: Dict[int, List[Dict]], class_names: List[str]) -> Dic
 # ---------------------------------------------------------------------------
 
 def load_data(data_path: str, noise_mode: str, n_bins: int, top_k: int,
-              prediction_source: str = "dnn", feature_tag: str = ""):
+              prediction_source: str = "dnn", feature_tag: str = "",
+              backbone: str = "dino"):
     """Load pickle data and sample per label.
 
     Parameters
@@ -202,18 +203,36 @@ def load_data(data_path: str, noise_mode: str, n_bins: int, top_k: int,
         Filename is resolved by :func:`naming.test_pkl_name`.
     feature_tag : str
         Optional tag for embedding-based pkl files (e.g. ``"emb10"``).
+    backbone : str
+        Encoder backbone (``"dino"`` | ``"denomae"``).
     """
     fname = test_pkl_name(prediction_source, noise_mode, n_bins, top_k,
-                          feature_tag=feature_tag)
+                          feature_tag=feature_tag, backbone=backbone)
     with open(os.path.join(data_path, fname), 'rb') as f:
         whole_data = pickle.load(f)
     return sample_per_label(whole_data, per_label=20, seed=42, shuffle=True)
 
 
+def _signal_path_to_filename(path: str) -> str:
+    """Convert a signal path to a filename identifier.
+
+    For the *own* dataset the filename alone is unique and encodes the
+    class label (e.g. ``OOK_2.17dB__0379.npy``).  For RadioML, the
+    basename is generic (``sample_0.npy``) and the class is encoded in
+    the parent directory, so we keep ``CLASS/sample_0.npy``.
+    """
+    base = os.path.basename(path)
+    parent = os.path.basename(os.path.dirname(path))
+    # RadioML class dirs don't contain "Signal" and basenames start with "sample"
+    if base.startswith("sample"):
+        return f"{parent}/{base}"
+    return base
+
+
 def build_prompts_data(data: dict, prompt_type: str, limit: int = 332) -> List[Dict]:
     """Build a list of prompt dicts from data."""
     return [
-        {'prompt': prompt, 'filename': os.path.basename(data['signal_paths'][i])}
+        {'prompt': prompt, 'filename': _signal_path_to_filename(data['signal_paths'][i])}
         for i, prompt in enumerate(data[prompt_type][:limit])
     ]
 
@@ -278,7 +297,12 @@ def build_result_entry(filename: str, try_idx: int, prompt: str,
                        raw_response: str, start_tag: str = "<think>",
                        end_tag: str = "</think>") -> Dict:
     """Build a standardized result dictionary."""
-    true_label = filename.split('_')[0]
+    # RadioML: filename is "CLASS/sample_N.npy" → label = CLASS
+    # Own:     filename is "OOK_2.17dB__0379.npy" → label = first segment before '_'
+    if '/' in filename:
+        true_label = filename.split('/')[0]
+    else:
+        true_label = filename.split('_')[0]
     end_idx, reasoning = extract_tag(raw_response, start_tag, end_tag)
     return {
         'filename': filename,
@@ -287,12 +311,15 @@ def build_result_entry(filename: str, try_idx: int, prompt: str,
         'raw_response': raw_response,
         'true_label': true_label,
         'reasoning': reasoning,
-        'response_label': raw_response[end_idx:],
+        'response_label': raw_response[end_idx:].strip(),
     }
 
 
 def print_metrics(sorted_results: Dict, class_names: List[str]):
     """Print all standard metrics."""
+    if not sorted_results:
+        print("No results to compute metrics on.")
+        return
     print(f"acc: {acc(sorted_results)}")
     print(f"clean-acc: {clean_acc(sorted_results, class_names=class_names)}")
     n_tries = len(next(iter(sorted_results.values())))

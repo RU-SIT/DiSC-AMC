@@ -48,6 +48,39 @@ _DEFAULT_TRANSFORM = transforms.Compose([
     transforms.ToTensor(),
 ])
 
+
+def _collect_image_paths(dataset_path: str) -> List[str]:
+    """Gather ``.png`` image paths from a dataset directory.
+
+    Checks ``noisyImg/``, ``noiseLessImg/`` (own dataset) and ``img/``
+    (RadioML) sub-directories.
+    """
+    candidates = ["noiseLessImg", "noisyImg", "img"]
+    paths: List[str] = []
+    for name in candidates:
+        d = os.path.join(dataset_path, name)
+        if os.path.isdir(d):
+            paths.extend(sorted(glob(os.path.join(d, "*.png"))))
+    return paths
+
+
+# ── Feature extraction helper ────────────────────────────────────────────────
+
+
+def _extract_encoder_features(model: "ImageClassifier", x: torch.Tensor) -> torch.Tensor:
+    """Extract flat encoder features from *model* for input batch *x*.
+
+    For DINO the encoder directly returns a ``(B, 768)`` CLS token.  For
+    DenoMAE2 we must go through ``forward_encoder`` and mean-pool patch
+    tokens, since ``DenoMAE2.forward()`` expects a *targets* argument.
+    ResNet returns a spatial feature map (caller must pool separately).
+    """
+    if model.backbone_type == "denomae":
+        features, _, _ = model.encoder.forward_encoder(x, mask_ratio=0)
+        return features[:, 1:, :].mean(dim=1)  # (B, latent_dim)
+    return model.encoder(x)
+
+
 # ── Model loading helper ────────────────────────────────────────────────────
 
 
@@ -70,8 +103,20 @@ def load_classifier(
         num_classes=num_classes,
         freeze_encoder=freeze_encoder,
     )
-    state = torch.load(weights_path, map_location="cpu", weights_only=True)
-    model.load_state_dict(state)
+    state = torch.load(weights_path, map_location="cpu", weights_only=(backbone != "denomae"))
+
+    if backbone == "denomae":
+        # Checkpoint from DownstreamClassifier (possibly DataParallel)
+        state = {k.replace("module.", ""): v for k, v in state.items()}
+        remapped: Dict[str, object] = {}
+        for k, v in state.items():
+            if k.startswith("encoder."):
+                remapped["encoder.denomae." + k[len("encoder."):]] = v
+            elif k.startswith("classification_head."):
+                remapped["classifier_head." + k[len("classification_head."):]] = v
+        state = remapped
+
+    model.load_state_dict(state, strict=(backbone != "denomae"))
     model.to(device).eval()
     return model, device
 
@@ -145,7 +190,7 @@ def evaluate_test_set(
         for images, labels in tqdm(loader, desc="Evaluating"):
             images, labels = images.to(device), labels.to(device)
 
-            features = model.encoder(images)
+            features = _extract_encoder_features(model, images)
 
             # Classifier-head predictions
             if model.backbone_type == "resnet":
@@ -200,13 +245,7 @@ def predict_topk_classifier(
     classifies each image, and returns (and optionally saves) a dict
     mapping ``{filename: {image_type: [class1, class2, …]}}``.
     """
-    noiseless_dir = os.path.join(dataset_path, "noiseLessImg")
-    noisy_dir = os.path.join(dataset_path, "noisyImg")
-
-    image_paths: List[str] = []
-    for d in (noiseless_dir, noisy_dir):
-        if os.path.isdir(d):
-            image_paths.extend(sorted(glob(os.path.join(d, "*.png"))))
+    image_paths = _collect_image_paths(dataset_path)
 
     predictions: Dict[str, Dict[str, List[str]]] = {}
 
@@ -254,13 +293,7 @@ def predict_topk_centroids(
     """
     centroid_tensor, centroid_class_names = load_centroids(centroid_path, device)
 
-    noiseless_dir = os.path.join(dataset_path, "noiseLessImg")
-    noisy_dir = os.path.join(dataset_path, "noisyImg")
-
-    image_paths: List[str] = []
-    for d in (noiseless_dir, noisy_dir):
-        if os.path.isdir(d):
-            image_paths.extend(sorted(glob(os.path.join(d, "*.png"))))
+    image_paths = _collect_image_paths(dataset_path)
 
     predictions: Dict[str, Dict[str, List[str]]] = {}
 
@@ -270,7 +303,7 @@ def predict_topk_centroids(
             image = Image.open(img_path).convert("RGB")
             tensor = transform(image).unsqueeze(0).to(device)
 
-            features = model.encoder(tensor)  # (1, latent_dim)
+            features = _extract_encoder_features(model, tensor)  # (1, latent_dim)
             if model.backbone_type == "resnet":
                 features = torch.flatten(model.pool(features), 1)
 
@@ -344,17 +377,11 @@ def build_faiss_index(
             "Install it with:  pip install faiss-cpu   (or faiss-gpu)"
         )
 
-    noiseless_dir = os.path.join(train_dataset_path, "noiseLessImg")
-    noisy_dir = os.path.join(train_dataset_path, "noisyImg")
-
-    image_paths: List[str] = []
-    for d in (noiseless_dir, noisy_dir):
-        if os.path.isdir(d):
-            image_paths.extend(sorted(glob(os.path.join(d, "*.png"))))
+    image_paths = _collect_image_paths(train_dataset_path)
 
     if not image_paths:
         raise FileNotFoundError(
-            f"No .png images found in {train_dataset_path}/noisyImg or noiseLessImg"
+            f"No .png images found in {train_dataset_path} (checked noisyImg, noiseLessImg, img)"
         )
 
     if output_path is None:
@@ -371,7 +398,7 @@ def build_faiss_index(
             image = Image.open(img_path).convert("RGB")
             tensor = transform(image).unsqueeze(0).to(device)
 
-            features = model.encoder(tensor)  # (1, latent_dim)
+            features = _extract_encoder_features(model, tensor)  # (1, latent_dim)
             if model.backbone_type == "resnet":
                 features = torch.flatten(model.pool(features), 1)
 
@@ -498,13 +525,7 @@ def predict_topk_faiss(
     print(f"FAISS index loaded: {index.ntotal} vectors (knn_k={knn_k})")
 
     # Gather test images
-    noiseless_dir = os.path.join(dataset_path, "noiseLessImg")
-    noisy_dir = os.path.join(dataset_path, "noisyImg")
-
-    image_paths: List[str] = []
-    for d in (noiseless_dir, noisy_dir):
-        if os.path.isdir(d):
-            image_paths.extend(sorted(glob(os.path.join(d, "*.png"))))
+    image_paths = _collect_image_paths(dataset_path)
 
     predictions: Dict[str, Dict[str, List[str]]] = {}
 
@@ -514,7 +535,7 @@ def predict_topk_faiss(
             image = Image.open(img_path).convert("RGB")
             tensor = transform(image).unsqueeze(0).to(device)
 
-            features = model.encoder(tensor)  # (1, latent_dim)
+            features = _extract_encoder_features(model, tensor)  # (1, latent_dim)
             if model.backbone_type == "resnet":
                 features = torch.flatten(model.pool(features), 1)
 
@@ -584,7 +605,7 @@ if __name__ == "__main__":
 
     # --- evaluate ---
     eval_p = sub.add_parser("evaluate", help="Evaluate on a test set.")
-    eval_p.add_argument("--backbone", type=str, default="dino", choices=["dino", "resnet"])
+    eval_p.add_argument("--backbone", type=str, default="dino", choices=["dino", "resnet", "denomae"])
     eval_p.add_argument("--weights", type=str, required=True, help="Path to classifier weights.")
     eval_p.add_argument("--test_path", type=str, required=True, help="Test dataset path.")
     eval_p.add_argument("--centroid_path", type=str, default=None, help="Optional centroids JSON.")
@@ -594,7 +615,7 @@ if __name__ == "__main__":
 
     # --- predict ---
     pred_p = sub.add_parser("predict", help="Per-image top-k predictions.")
-    pred_p.add_argument("--backbone", type=str, default="dino", choices=["dino", "resnet"])
+    pred_p.add_argument("--backbone", type=str, default="dino", choices=["dino", "resnet", "denomae"])
     pred_p.add_argument("--weights", type=str, required=True)
     pred_p.add_argument("--dataset_path", type=str, required=True, help="Path with noisyImg/ & noiseLessImg/.")
     pred_p.add_argument("--centroid_path", type=str, default=None, help="If given, use centroids instead of classifier head.")
@@ -612,7 +633,7 @@ if __name__ == "__main__":
 
     # --- build_faiss ---
     faiss_p = sub.add_parser("build_faiss", help="Build FAISS index from training images.")
-    faiss_p.add_argument("--backbone", type=str, default="dino", choices=["dino", "resnet"])
+    faiss_p.add_argument("--backbone", type=str, default="dino", choices=["dino", "resnet", "denomae"])
     faiss_p.add_argument("--weights", type=str, required=True)
     faiss_p.add_argument("--train_path", type=str, required=True,
                          help="Training dataset path with noisyImg/ & noiseLessImg/.")
@@ -623,17 +644,44 @@ if __name__ == "__main__":
                          help="Use IVF approximate search (faster for large datasets).")
     faiss_p.add_argument("--nlist", type=int, default=100, help="IVF cells (default: 100).")
 
+    # --- shared arguments ---
+    for sub_parser in [eval_p, pred_p, faiss_p]:
+        sub_parser.add_argument(
+            "--num_classes", type=int, default=None,
+            help="Number of output classes (default: auto-detect from --classes or 10).",
+        )
+        sub_parser.add_argument(
+            "--classes", type=str, default=None,
+            help="Comma-separated class names. Overrides CLASSES and num_classes.",
+        )
+
     args = parser.parse_args()
 
-    t = transforms.Compose([
+    # Resolve class list / num_classes
+    if args.classes is not None:
+        _classes = args.classes.split(",")
+        _num_classes = len(_classes)
+    elif args.num_classes is not None:
+        _classes = CLASSES  # only used for label mapping when needed
+        _num_classes = args.num_classes
+    else:
+        _classes = CLASSES
+        _num_classes = len(CLASSES)
+
+    _transform_list = [
         transforms.Resize((args.image_size, args.image_size)),
         transforms.ToTensor(),
-    ])
+    ]
+    if args.backbone == "denomae":
+        _transform_list.append(
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        )
+    t = transforms.Compose(_transform_list)
 
     model, device = load_classifier(
         backbone=args.backbone,
         weights_path=args.weights,
-        num_classes=len(CLASSES),
+        num_classes=_num_classes,
     )
 
     if args.command == "evaluate":

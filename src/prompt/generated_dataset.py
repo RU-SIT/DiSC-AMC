@@ -608,7 +608,7 @@ def get_embedding_processed_data(
         signal_path_to_image_path(p, noise_mode) for p in signal_paths
     ]
     embeddings = extract_embeddings_from_paths(
-        encoder, device, image_paths, batch_size,
+        encoder, device, image_paths, batch_size, transform=transform,
     )
 
     # ── 3. PCA → discretize → scale ─────────────────────────────────────
@@ -649,6 +649,7 @@ def get_embedding_processed_data(
                 encoder, device, rag_example_paths, noise_mode,
                 n_components, pca, discretizers, scaler, batch_size,
                 verbose=False, dataset_type=dataset_type,
+                transform=transform,
             )
             return s_ex, d_ex
 
@@ -664,6 +665,7 @@ def get_embedding_processed_data(
             encoder, device, example_paths, noise_mode,
             n_components, pca, discretizers, scaler, batch_size,
             dataset_type=dataset_type,
+            transform=transform,
         )
         rag_scaled_examples = None
         rag_discret_examples = None
@@ -799,6 +801,7 @@ def build_train(
     min_classes: int = 0,
     prompt_version: str = "v1",
     dataset_type: str = "own",
+    num_classes: int = 10,
 ) -> None:
     """Build and save the TRAIN dataset ``.pkl``.
 
@@ -833,7 +836,7 @@ def build_train(
         if encoder_weights is None:
             raise ValueError("--encoder_weights is required for feature_type=embeddings")
 
-        encoder, device = load_encoder_for_embeddings(backbone, encoder_weights)
+        encoder, device, emb_transform = load_encoder_for_embeddings(backbone, encoder_weights, num_classes=num_classes)
         print(f"Encoder ({backbone}) loaded on {device}")
 
         train_data = get_embedding_processed_data(
@@ -851,6 +854,8 @@ def build_train(
             decimal_precision=3,
             add_context=True,
             min_classes=min_classes,
+            dataset_type=dataset_type,
+            transform=emb_transform,
         )
     else:
         feature_names = feature_names or DEFAULT_FEATURE_NAMES
@@ -871,7 +876,7 @@ def build_train(
 
     out_path = os.path.join(
         base_dir,
-        train_pkl_name(prediction_source, noise_mode, n_bins, top_k, feature_tag=feat_tag),
+        train_pkl_name(prediction_source, noise_mode, n_bins, top_k, feature_tag=feat_tag, backbone=backbone),
     )
     save_processed_data(train_data, out_path)
     print(f"Train data saved → {out_path}")
@@ -915,6 +920,7 @@ def build_test(
     min_classes: int = 0,
     prompt_version: str = "v1",
     dataset_type: str = "own",
+    num_classes: int = 10,
 ) -> None:
     """Build and save the TEST dataset ``.pkl``.
 
@@ -946,7 +952,7 @@ def build_test(
     # ── Load train data (for scaler, discretizers, and optionally PCA) ───
     train_pkl = os.path.join(
         train_base_dir,
-        train_pkl_name(prediction_source, noise_mode, n_bins, top_k, feature_tag=feat_tag),
+        train_pkl_name(prediction_source, noise_mode, n_bins, top_k, feature_tag=feat_tag, backbone=backbone),
     )
     if not os.path.isfile(train_pkl):
         raise FileNotFoundError(
@@ -984,15 +990,23 @@ def build_test(
     print(f"Test signals: {len(test_signal_paths)} | Classes: {len(set(test_labels))}")
 
     # ── Load top-k predictions (optional for OOD) ──────────────────────
-    ktop_json = os.path.join(base_dir, converted_json_name(prediction_source, top_k))
+    ktop_json = os.path.join(base_dir, converted_json_name(prediction_source, top_k, backbone=backbone))
     ktop_info = None
     if os.path.isfile(ktop_json):
         ktop_raw = load_from_json(ktop_json)
         print(f"Loaded top-{top_k} predictions from {ktop_json}")
         # Map signal_path → top-k class list
-        img_key = "noiseLessImg" if noise_mode == "noiselessSignal" else "noisyImg"
+        if dataset_type == "radioml":
+            img_key = "img"
+            def _ktop_key(p):
+                # Signal: .../128APSK/sample_0.npy → key: 128APSK_sample_0.npy
+                cls = os.path.basename(os.path.dirname(p))
+                return f"{cls}_{os.path.basename(p)}"
+        else:
+            img_key = "noiseLessImg" if noise_mode == "noiselessSignal" else "noisyImg"
+            _ktop_key = os.path.basename
         ktop_info = [
-            ktop_raw[os.path.basename(p)][img_key]
+            ktop_raw[_ktop_key(p)][img_key]
             for p in test_signal_paths
         ]
     else:
@@ -1024,7 +1038,7 @@ def build_test(
         if encoder_weights is None:
             raise ValueError("--encoder_weights is required for feature_type=embeddings")
 
-        encoder, device = load_encoder_for_embeddings(backbone, encoder_weights)
+        encoder, device, emb_transform = load_encoder_for_embeddings(backbone, encoder_weights, num_classes=num_classes)
         print(f"Encoder ({backbone}) loaded on {device}")
 
         test_data = get_embedding_processed_data(
@@ -1051,6 +1065,7 @@ def build_test(
             ktop_question_template=_v2_q,
             ktop_end_text=_v2_end,
             dataset_type=dataset_type,
+            transform=emb_transform,
         )
     else:
         feature_names = feature_names or DEFAULT_FEATURE_NAMES
@@ -1077,7 +1092,7 @@ def build_test(
 
     out_path = os.path.join(
         base_dir,
-        test_pkl_name(prediction_source, noise_mode, n_bins, top_k, feature_tag=feat_tag),
+        test_pkl_name(prediction_source, noise_mode, n_bins, top_k, feature_tag=feat_tag, backbone=backbone),
     )
     save_processed_data(test_data, out_path)
     print(f"Test data saved → {out_path}")
@@ -1161,7 +1176,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--backbone", type=str, default="dino",
-        choices=["dino", "resnet"],
+        choices=["dino", "resnet", "denomae"],
         help="Encoder backbone type (default: dino).  Only used when "
              "--feature_type=embeddings.",
     )
@@ -1207,6 +1222,11 @@ if __name__ == "__main__":
              "class in filename) or 'radioml' (test/{Class}/*.npy with "
              "SNR in parent dir).  Default: own.",
     )
+    parser.add_argument(
+        "--num_classes", type=int, default=10,
+        help="Number of output classes the encoder/classifier was trained "
+             "with (default: 10 for 'own' dataset, use 24 for RadioML).",
+    )
 
     args = parser.parse_args()
 
@@ -1228,6 +1248,7 @@ if __name__ == "__main__":
             min_classes=args.min_classes,
             prompt_version=args.prompt_version,
             dataset_type=args.dataset_type,
+            num_classes=args.num_classes,
         )
     elif args.mode == "test":
         build_test(
@@ -1248,4 +1269,5 @@ if __name__ == "__main__":
             min_classes=args.min_classes,
             prompt_version=args.prompt_version,
             dataset_type=args.dataset_type,
+            num_classes=args.num_classes,
         )

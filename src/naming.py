@@ -100,6 +100,20 @@ SOURCES: Dict[str, PredictionSource] = {
         converted_json="ntop{topk}_faiss_filled_predictions.json",
         pkl_tag="faiss_filled",
     ),
+    "faiss_rml": PredictionSource(
+        key="faiss_rml",
+        label="FAISS kNN voting — RadioML-native DINO encoder",
+        raw_json="top{topk}_faiss_rml_predictions.json",
+        converted_json="ntop{topk}_faiss_rml_predictions.json",
+        pkl_tag="faiss_rml",
+    ),
+    "faiss_filled_rml": PredictionSource(
+        key="faiss_filled_rml",
+        label="FAISS kNN voting (padded) — RadioML-native DINO encoder",
+        raw_json="top{topk}_faiss_filled_rml_predictions.json",
+        converted_json="ntop{topk}_faiss_filled_rml_predictions.json",
+        pkl_tag="faiss_filled_rml",
+    ),
 }
 
 VALID_SOURCES: List[str] = list(SOURCES.keys())
@@ -183,6 +197,10 @@ class ExperimentConfig:
     rag_k: int = 0
     """Number of RAG neighbours (only relevant when ``use_rag=True``)."""
 
+    backbone: str = "dino"
+    """Encoder backbone: ``"dino"`` | ``"resnet"`` | ``"denomae"``.
+    ``"dino"`` is omitted from the tag for backward compatibility."""
+
     prompt_version: str = "v1"
     """Prompt format version (``"v1"`` = original, ``"v2"`` = source-aware).
     ``"v1"`` is omitted from the tag for backward compatibility."""
@@ -209,6 +227,10 @@ class ExperimentConfig:
         if self.ood_train_folder:
             parts.append("ood")
 
+        # Backbone (omit default "dino" → backward compat)
+        if self.backbone and self.backbone != "dino":
+            parts.append(self.backbone)
+
         # Embeddings
         if self.feature_type == "embeddings" and self.n_components > 0:
             parts.append(f"emb{self.n_components}")
@@ -226,22 +248,32 @@ class ExperimentConfig:
 
 # ── Filename builders ────────────────────────────────────────────────────────
 
-def raw_json_name(source: str, top_k: int) -> str:
+def raw_json_name(source: str, top_k: int, backbone: str = "dino") -> str:
     """Filename for the ``.png``-keyed prediction JSON (inference output).
 
     >>> raw_json_name("centroid", 5)
     'top5_centroid_predictions.json'
+    >>> raw_json_name("faiss", 5, backbone="denomae")
+    'top5_faiss_denomae_predictions.json'
     """
-    return get_source(source).raw_json.format(topk=top_k)
+    name = get_source(source).raw_json.format(topk=top_k)
+    if backbone != "dino":
+        name = name.replace("_predictions.json", f"_{backbone}_predictions.json")
+    return name
 
 
-def converted_json_name(source: str, top_k: int) -> str:
+def converted_json_name(source: str, top_k: int, backbone: str = "dino") -> str:
     """Filename for the ``.npy``-keyed prediction JSON (after conversion).
 
     >>> converted_json_name("centroid", 5)
     'ntop5_centroid_predictions.json'
+    >>> converted_json_name("faiss", 5, backbone="denomae")
+    'ntop5_faiss_denomae_predictions.json'
     """
-    return get_source(source).converted_json.format(topk=top_k)
+    name = get_source(source).converted_json.format(topk=top_k)
+    if backbone != "dino":
+        name = name.replace("_predictions.json", f"_{backbone}_predictions.json")
+    return name
 
 
 def _pkl_name(mode: str, cfg: ExperimentConfig) -> str:
@@ -264,6 +296,7 @@ def train_pkl_name(
     top_k: int,
     feature_tag: str = "",
     *,
+    backbone: str = "dino",
     cfg: ExperimentConfig | None = None,
 ) -> str:
     """Filename for the train ``.pkl`` dataset.
@@ -294,6 +327,7 @@ def train_pkl_name(
         n_bins=n_bins,
         top_k=top_k,
         feature_tag=feature_tag,
+        backbone=backbone,
     )
     return _pkl_name("train", _cfg)
 
@@ -305,6 +339,7 @@ def test_pkl_name(
     top_k: int,
     feature_tag: str = "",
     *,
+    backbone: str = "dino",
     cfg: ExperimentConfig | None = None,
 ) -> str:
     """Filename for the test ``.pkl`` dataset.
@@ -327,6 +362,7 @@ def test_pkl_name(
         n_bins=n_bins,
         top_k=top_k,
         feature_tag=feature_tag,
+        backbone=backbone,
     )
     return _pkl_name("test", _cfg)
 
@@ -388,6 +424,7 @@ def _legacy_config(
     n_bins: int,
     top_k: int,
     feature_tag: str = "",
+    backbone: str = "dino",
 ) -> ExperimentConfig:
     """Build a minimal :class:`ExperimentConfig` from the old-style arguments.
 
@@ -411,4 +448,5 @@ def _legacy_config(
         top_k=top_k,
         feature_type=feature_type,
         n_components=n_components,
+        backbone=backbone,
     )

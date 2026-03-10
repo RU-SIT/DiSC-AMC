@@ -58,7 +58,7 @@ def main(dataset_folder='unlabeled_10k', prompt_type='discret_prompts',
          n_bins=10, top_k=5, num_tries=3, prediction_source='dnn',
          feature_type='stats', n_components=0,
          ood_train_folder='', use_rag=False, rag_k=0,
-         output_dir='.', prompt_version='v1'):
+         output_dir='.', prompt_version='v1', backbone='dino'):
     cfg = ExperimentConfig(
         dataset_folder=dataset_folder,
         prediction_source=prediction_source,
@@ -71,6 +71,7 @@ def main(dataset_folder='unlabeled_10k', prompt_type='discret_prompts',
         use_rag=use_rag,
         rag_k=rag_k,
         prompt_version=prompt_version,
+        backbone=backbone,
     )
     results = []
     filepath = os.path.join(output_dir, _output_path(cfg, prompt_type, model_name))
@@ -78,7 +79,8 @@ def main(dataset_folder='unlabeled_10k', prompt_type='discret_prompts',
     try:
         data, _, _ = load_data(f'../../data/own/{dataset_folder}', noise_mode, n_bins, top_k,
                                prediction_source=prediction_source,
-                               feature_tag=f'emb{n_components}' if feature_type == 'embeddings' else '')
+                               feature_tag=f'emb{n_components}' if feature_type == 'embeddings' else '',
+                               backbone=backbone)
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
         all_prompts_data = build_prompts_data(data, prompt_type)
@@ -109,7 +111,7 @@ def read_results(dataset_folder='unlabeled_10k', prompt_type='discret_prompts',
                  n_bins=5, top_k=5, prediction_source='dnn',
                  feature_type='stats', n_components=0,
                  ood_train_folder='', use_rag=False, rag_k=0,
-                 output_dir='.', prompt_version='v1'):
+                 output_dir='.', prompt_version='v1', backbone='dino'):
     """Read results from JSON file."""
     import json
     cfg = ExperimentConfig(
@@ -124,6 +126,7 @@ def read_results(dataset_folder='unlabeled_10k', prompt_type='discret_prompts',
         use_rag=use_rag,
         rag_k=rag_k,
         prompt_version=prompt_version,
+        backbone=backbone,
     )
     filepath = os.path.join(output_dir, _output_path(cfg, prompt_type, model_name))
     with open(filepath, 'r') as f:

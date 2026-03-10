@@ -97,6 +97,7 @@ def _build_exp_dir_name(
     use_rag: bool,
     rag_k: int,
     ood_train_folder: str,
+    backbone: str = "dino",
 ) -> str:
     model_short = _shorten_model(model)
     feat_tag = ""
@@ -106,6 +107,10 @@ def _build_exp_dir_name(
         if feat_tag:
             feat_tag += "_"
         feat_tag += "ood"
+    if backbone != "dino":
+        if feat_tag:
+            feat_tag += "_"
+        feat_tag += backbone
     if feature_type == "embeddings" and n_components > 0:
         if feat_tag:
             feat_tag += "_"
