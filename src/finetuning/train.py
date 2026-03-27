@@ -47,6 +47,7 @@ DEFAULT_WARMUP_STEPS = 5
 DEFAULT_WEIGHT_DECAY = 0.01
 DEFAULT_VAL_SPLIT = 0.0
 DEFAULT_SEED = 3407
+DEFAULT_LR_SCHEDULER = "linear"
 
 # Modules targeted by LoRA adapters (covers attention + MLP for most LLMs)
 LORA_TARGET_MODULES = [
@@ -97,6 +98,7 @@ def train(
     save_merged: bool = False,
     val_split: float = DEFAULT_VAL_SPLIT,
     completion_version: str = DEFAULT_COMPLETION_VERSION,
+    lr_scheduler_type: str = DEFAULT_LR_SCHEDULER,
 ):
     """Run QLoRA finetuning.
 
@@ -202,7 +204,7 @@ def train(
         save_total_limit=2,
         seed=seed,
         optim="adamw_8bit",
-        lr_scheduler_type="linear",
+        lr_scheduler_type=lr_scheduler_type,
         report_to="none",       # set to "wandb" if you want W&B logging
         dataset_text_field="text",
         max_seq_length=max_seq_length,
@@ -316,6 +318,12 @@ def main():
                         help=f"Hold-out fraction for validation (default: {DEFAULT_VAL_SPLIT}). "
                              "Set to e.g. 0.1 to monitor eval loss.")
 
+    # LR scheduler
+    parser.add_argument("--lr_scheduler_type", type=str,
+                        default=DEFAULT_LR_SCHEDULER,
+                        help=f"LR scheduler type: linear, cosine, etc. "
+                             f"(default: {DEFAULT_LR_SCHEDULER}).")
+
     # Completion reasoning
     parser.add_argument("--completion_version", type=str,
                         default=DEFAULT_COMPLETION_VERSION,
@@ -348,6 +356,7 @@ def main():
         save_merged=args.save_merged,
         val_split=args.val_split,
         completion_version=args.completion_version,
+        lr_scheduler_type=args.lr_scheduler_type,
     )
 
 

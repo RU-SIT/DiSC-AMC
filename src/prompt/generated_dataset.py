@@ -557,6 +557,7 @@ def get_embedding_processed_data(
     ktop_question_template: Optional[str] = None,
     ktop_end_text: Optional[str] = None,
     dataset_type: str = "own",
+    transform=None,
 ) -> Dict[str, Any]:
     """Process signals using encoder embeddings instead of statistical features.
 

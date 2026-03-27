@@ -229,7 +229,7 @@ def _signal_path_to_filename(path: str) -> str:
     return base
 
 
-def build_prompts_data(data: dict, prompt_type: str, limit: int = 332) -> List[Dict]:
+def build_prompts_data(data: dict, prompt_type: str, limit: int = 1080) -> List[Dict]:
     """Build a list of prompt dicts from data."""
     return [
         {'prompt': prompt, 'filename': _signal_path_to_filename(data['signal_paths'][i])}
