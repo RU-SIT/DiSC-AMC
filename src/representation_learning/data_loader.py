@@ -139,6 +139,70 @@ class DatasetWithPath(Dataset):
         return self._inner.signal_images
 
 
+class RadioMLConstellationDataset(Dataset):
+    """Loads RadioML constellation images from one or more SNR-level ``img/`` dirs.
+
+    Expected layout per SNR level::
+
+        {data_root}/snr_Xdb/{split}/img/{CLASS}_sample_{N}.png
+
+    The dataset can combine **multiple SNR levels** (e.g. ``snr_0db``,
+    ``snr_10db``, ``snr_20db``) into a single training pool by passing a
+    list of directory paths.
+
+    Label extraction handles class names containing dashes
+    (e.g. ``AM-DSB-SC``) by splitting on ``_sample_``.
+    """
+
+    def __init__(
+        self,
+        img_dirs: list[str],
+        classes: list[str],
+        transform: callable = transforms.ToTensor(),
+    ):
+        """
+        Args:
+            img_dirs: List of ``img/`` directories to load PNGs from.
+                      Each entry should be a path like
+                      ``/…/RadioML/snr_0db/train/img``.
+            classes:  Ordered list of class names.
+            transform: torchvision transform applied to each image.
+        """
+        self.signal_images: list[str] = []
+        for d in img_dirs:
+            self.signal_images.extend(sorted(glob(os.path.join(d, '*.png'))))
+
+        self.classes = classes
+        self.label_to_int = {label: i for i, label in enumerate(self.classes)}
+        self.int_to_label = {i: label for label, i in self.label_to_int.items()}
+        self.num_classes = len(self.classes)
+        self.transform = transform
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def extract_label(filename: str) -> str:
+        """``AM-DSB-SC_sample_0.png`` → ``AM-DSB-SC``."""
+        base = os.path.basename(filename)
+        return base.rsplit('_sample_', 1)[0]
+
+    # ------------------------------------------------------------------
+    def __len__(self):
+        return len(self.signal_images)
+
+    def __getitem__(self, idx):
+        path = self.signal_images[idx]
+        label_str = self.extract_label(path)
+        if label_str not in self.label_to_int:
+            raise IndexError(
+                f"Label '{label_str}' from {os.path.basename(path)} "
+                f"not in known classes."
+            )
+        target_int = self.label_to_int[label_str]
+        image = Image.open(path).convert('RGB')
+        image = self.transform(image)
+        return image, target_int
+
+
 class ConstilationDataset(Dataset):
     def __init__(self,
                  dataset_path: str = None,

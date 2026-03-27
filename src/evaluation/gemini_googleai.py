@@ -19,6 +19,19 @@ load_dotenv()
 
 CLASS_NAMES = ['4ASK', '4PAM', '8ASK', '16PAM', 'CPFSK', 'DQPSK', 'GFSK', 'GMSK', 'OQPSK', 'OOK']
 
+RADIOML_CLASS_NAMES = [
+    '128APSK', '128QAM', '16APSK', '16PSK', '16QAM', '256QAM',
+    '32APSK', '32PSK', '32QAM', '4ASK', '64APSK', '64QAM',
+    '8ASK', '8PSK', 'AM-DSB-SC', 'AM-DSB-WC', 'AM-SSB-SC', 'AM-SSB-WC',
+    'BPSK', 'FM', 'GMSK', 'OOK', 'OQPSK', 'QPSK',
+]
+
+def get_class_names(dataset_type: str = 'own') -> list:
+    """Return class names for the given dataset type."""
+    if dataset_type == 'radioml':
+        return RADIOML_CLASS_NAMES
+    return CLASS_NAMES
+
 
 def get_gemini_response(prompt: str, model, temperature: float = 0.7) -> str:
     """Get response from Gemini API."""
@@ -51,7 +64,7 @@ def main(dataset_folder='unlabeled_10k', prompt_type='discret_prompts',
          n_bins=10, top_k=5, num_tries=3, prediction_source='dnn',
          feature_type='stats', n_components=0,
          ood_train_folder='', use_rag=False, rag_k=0,
-         output_dir='.'):
+         output_dir='.', prompt_version='v1', backbone='dino'):
     cfg = ExperimentConfig(
         dataset_folder=dataset_folder,
         prediction_source=prediction_source,
@@ -63,6 +76,8 @@ def main(dataset_folder='unlabeled_10k', prompt_type='discret_prompts',
         ood_train_folder=ood_train_folder,
         use_rag=use_rag,
         rag_k=rag_k,
+        prompt_version=prompt_version,
+        backbone=backbone,
     )
     results = []
     filepath = os.path.join(output_dir, _output_path(cfg, prompt_type, model_name))
@@ -70,7 +85,8 @@ def main(dataset_folder='unlabeled_10k', prompt_type='discret_prompts',
     try:
         data, _, _ = load_data(f'../../data/own/{dataset_folder}', noise_mode, n_bins, top_k,
                                prediction_source=prediction_source,
-                               feature_tag=f'emb{n_components}' if feature_type == 'embeddings' else '')
+                               feature_tag=f'emb{n_components}' if feature_type == 'embeddings' else '',
+                               backbone=backbone)
 
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
         model_obj = genai.GenerativeModel(model_name)
@@ -107,7 +123,7 @@ def read_results(dataset_folder='unlabeled_10k', prompt_type='discret_prompts',
                  n_bins=5, top_k=5, prediction_source='dnn',
                  feature_type='stats', n_components=0,
                  ood_train_folder='', use_rag=False, rag_k=0,
-                 output_dir='.'):
+                 output_dir='.', prompt_version='v1', backbone='dino'):
     """Read and optionally clean results."""
     import json
     cfg = ExperimentConfig(
@@ -121,6 +137,8 @@ def read_results(dataset_folder='unlabeled_10k', prompt_type='discret_prompts',
         ood_train_folder=ood_train_folder,
         use_rag=use_rag,
         rag_k=rag_k,
+        prompt_version=prompt_version,
+        backbone=backbone,
     )
     filepath = os.path.join(output_dir, _output_path(cfg, prompt_type, model_name))
     with open(filepath, 'r') as f:

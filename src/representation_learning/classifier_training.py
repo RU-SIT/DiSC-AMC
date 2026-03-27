@@ -49,15 +49,41 @@ class ImageClassifier(nn.Module):
             self.encoder: nn.Module = autoencoder.encoder
             self.pool = nn.AdaptiveAvgPool2d((1, 1))
             self.classifier_head = nn.Linear(latent_dim, num_classes)
+        elif backbone == 'denomae':
+            from functools import partial as _partial
+            from src.denoMAE2.main import DenoMAE2
+            from src.denoMAE2.finetune import DownstreamClassifier
+
+            base_encoder = DenoMAE2(
+                img_size=224, patch_size=16, embed_dim=768, depth=12, num_heads=12,
+                decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=8,
+                norm_layer=_partial(nn.LayerNorm, eps=1e-6),
+            )
+            if pretrained_path:
+                print(f"Loading DenoMAE2 pretrained weights from {pretrained_path}")
+                checkpoint = torch.load(pretrained_path, map_location='cpu', weights_only=False)
+                checkpoint = {k.replace('module.', ''): v for k, v in checkpoint.items()}
+                base_encoder.load_state_dict(checkpoint, strict=False)
+
+            self._denomae_classifier = DownstreamClassifier(
+                base_encoder, num_classes=num_classes, freeze_encoder=freeze_encoder,
+            )
+            # Expose encoder/classifier_head so the rest of the codebase
+            # can access them uniformly (e.g. for embedding extraction).
+            self.encoder = self._denomae_classifier.encoder
+            self.classifier_head = self._denomae_classifier.classification_head
         else:
             raise ValueError(f"Unsupported backbone: {backbone}")
 
-        if freeze_encoder:
+        if freeze_encoder and backbone != 'denomae':
+            # denomae handles freezing inside DownstreamClassifier
             print("Freezing encoder weights.")
             for param in self.encoder.parameters():
                 param.requires_grad = False
 
     def forward(self, x):
+        if self.backbone_type == 'denomae':
+            return self._denomae_classifier(x)
         features = self.encoder(x)
         if self.backbone_type == 'dino':
             # DINO encoder returns CLS token

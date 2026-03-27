@@ -89,6 +89,23 @@ SOURCE_CONTEXT = {
         "are high-confidence kNN picks; later candidates were added for "
         "diversity and may be less likely."
     ),
+    "faiss_rml": (
+        "The candidate modulation schemes below were shortlisted by a "
+        "k-nearest-neighbour (kNN) vote over training signals retrieved "
+        "from a FAISS vector index built with a RadioML-native DINOv2 "
+        "encoder, weighted by inverse distance. NOTE: If fewer candidates "
+        "than expected appear, all retrieved neighbours agreed on the "
+        "same class — treat that class as the strong favourite."
+    ),
+    "faiss_filled_rml": (
+        "The candidate modulation schemes below were shortlisted in two "
+        "stages: (1) k-nearest-neighbour voting over training signals "
+        "from a FAISS index built with a RadioML-native DINOv2 encoder, "
+        "and (2) brute-force filling to guarantee a fixed number of "
+        "distinct classes. The first candidates listed are high-confidence "
+        "kNN picks; later candidates were added for diversity and may be "
+        "less likely."
+    ),
     "dnn": (
         "The candidate modulation schemes below were shortlisted by a "
         "trained DNN classifier head. The classes are ordered by softmax "

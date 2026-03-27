@@ -58,6 +58,19 @@ CLASS_NAMES = [
     "DQPSK", "GFSK", "GMSK", "OQPSK", "OOK",
 ]
 
+RADIOML_CLASS_NAMES = [
+    '128APSK', '128QAM', '16APSK', '16PSK', '16QAM', '256QAM',
+    '32APSK', '32PSK', '32QAM', '4ASK', '64APSK', '64QAM',
+    '8ASK', '8PSK', 'AM-DSB-SC', 'AM-DSB-WC', 'AM-SSB-SC', 'AM-SSB-WC',
+    'BPSK', 'FM', 'GMSK', 'OOK', 'OQPSK', 'QPSK',
+]
+
+def get_class_names(dataset_type: str = 'own') -> list:
+    """Return class names for the given dataset type."""
+    if dataset_type == 'radioml':
+        return RADIOML_CLASS_NAMES
+    return CLASS_NAMES
+
 
 def _shorten_model(model: str) -> str:
     m = model.replace("unsloth/", "")
@@ -84,6 +97,7 @@ def _build_exp_dir_name(
     use_rag: bool,
     rag_k: int,
     ood_train_folder: str,
+    backbone: str = "dino",
 ) -> str:
     model_short = _shorten_model(model)
     feat_tag = ""
@@ -93,6 +107,10 @@ def _build_exp_dir_name(
         if feat_tag:
             feat_tag += "_"
         feat_tag += "ood"
+    if backbone != "dino":
+        if feat_tag:
+            feat_tag += "_"
+        feat_tag += backbone
     if feature_type == "embeddings" and n_components > 0:
         if feat_tag:
             feat_tag += "_"

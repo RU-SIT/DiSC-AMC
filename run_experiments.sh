@@ -77,6 +77,8 @@ RAG_K=10
 MIN_CLASSES=0
 N_COMPONENTS=10
 PROMPT_VERSION="v1"          # v1 (original) | v2 (source-aware)
+DATASET_TYPE="own"           # "own" (flat dir, class in filename) or
+                             # "radioml" (test/{Class}/*.npy, SNR in parent dir)
 ENCODER_WEIGHTS="${EXP_DIR}/dino_classifier.pth"
 PRETRAINED_PATH="${EXP_DIR}/dino_autoencoder.pth"
 CLASSIFIER_PATH="${EXP_DIR}/dino_classifier.pth"
@@ -110,6 +112,9 @@ _build_exp_dir_name() {
     if [[ -n "$OOD_TRAIN_FOLDER" ]]; then
         [[ -n "$feat_tag" ]] && feat_tag+="_"; feat_tag+="ood"
     fi
+    if [[ "$BACKBONE" != "dino" ]]; then
+        [[ -n "$feat_tag" ]] && feat_tag+="_"; feat_tag+="${BACKBONE}"
+    fi
     if [[ "$FEATURE_TYPE" == "embeddings" && "$N_COMPONENTS" -gt 0 ]]; then
         [[ -n "$feat_tag" ]] && feat_tag+="_"; feat_tag+="emb${N_COMPONENTS}"
     fi
@@ -134,10 +139,12 @@ _recompute_derived() {
     fi
 
     CENTROID_OUTPUT="${TRAIN_PATH}/train/class_centers.json"
-    FAISS_INDEX_PATH="${TRAIN_PATH}/train/faiss_knn"
+    FAISS_INDEX_PATH="${TRAIN_PATH}/train/faiss_knn_${BACKBONE}"
 
-    RAW_JSON="top${TOP_K}_${PREDICTION_SOURCE}_predictions.json"
-    CONVERTED_JSON="ntop${TOP_K}_${PREDICTION_SOURCE}_predictions.json"
+    local _bb_tag=""
+    [[ "$BACKBONE" != "dino" ]] && _bb_tag="_${BACKBONE}"
+    RAW_JSON="top${TOP_K}_${PREDICTION_SOURCE}${_bb_tag}_predictions.json"
+    CONVERTED_JSON="ntop${TOP_K}_${PREDICTION_SOURCE}${_bb_tag}_predictions.json"
 
     OOD_TRAIN_FOLDER=""
     if [[ -n "$TRAIN_DATASET_FOLDER" && "$TRAIN_DATASET_FOLDER" != "$DATASET_FOLDER" ]]; then
@@ -298,6 +305,7 @@ for ds_row in "${DATASETS[@]}"; do
 
                 # Build pkl filenames to check for existence
                 PKL_TAG="${PREDICTION_SOURCE}"
+                [[ "$BACKBONE" != "dino" ]] && PKL_TAG+="_${BACKBONE}"
                 [[ "$FEATURE_TYPE" == "embeddings" ]] && PKL_TAG+="_emb${N_COMPONENTS}"
                 TRAIN_PKL_FILE="${TRAIN_PATH}/train_${PKL_TAG}_${NOISE_MODE}_${N_BINS}_${TOP_K}_data.pkl"
                 TEST_PKL_FILE="${DATASET_PATH}/test_${PKL_TAG}_${NOISE_MODE}_${N_BINS}_${TOP_K}_data.pkl"
@@ -317,7 +325,8 @@ for ds_row in "${DATASETS[@]}"; do
                             --data_root "$DATA_ROOT" \
                             $emb_flags \
                             $rag_flags \
-                            --prompt_version "$PROMPT_VERSION" || { echo -e "${RED}  Step 6a FAILED${NC}"; continue; }
+                            --prompt_version "$PROMPT_VERSION" \
+                            --dataset_type "$DATASET_TYPE" || { echo -e "${RED}  Step 6a FAILED${NC}"; continue; }
                     fi
                 fi
 
@@ -336,7 +345,8 @@ for ds_row in "${DATASETS[@]}"; do
                         $ood_flag \
                         $emb_flags \
                         $rag_flags \
-                        --prompt_version "$PROMPT_VERSION" || { echo -e "${RED}  Step 6 FAILED${NC}"; continue; }
+                        --prompt_version "$PROMPT_VERSION" \
+                        --dataset_type "$DATASET_TYPE" || { echo -e "${RED}  Step 6 FAILED${NC}"; continue; }
                 fi
 
                 # ── Steps 7+8: per model ─────────────────────────────
@@ -433,6 +443,7 @@ main(
     cache_dir='${MODEL_DIR}',
     data_root='${DATA_ROOT}',
     output_dir='${EXP_RUN_DIR}',
+    backbone='${BACKBONE}',
 )
 " && {
                         # ── Step 8: metrics → terminal + CSV ─────────
@@ -440,11 +451,13 @@ main(
                         CSV_ROW_TMP="${EXP_RUN_DIR}/.csv_row.tmp"
                         python -c "
 import sys
-from src.evaluation.unsloth_eval import read_results, CLASS_NAMES
+from src.evaluation.unsloth_eval import read_results, get_class_names
 from src.evaluation.utils import (
     sort_results_by_prompt, get_unique_prompts, print_metrics,
     acc, clean_acc, pass_acc, majority_acc,
 )
+
+_CLASS_NAMES = get_class_names('${DATASET_TYPE}')
 
 results = read_results(
     dataset_folder='${DATASET_FOLDER}',
@@ -460,18 +473,19 @@ results = read_results(
     use_rag=${USE_RAG_PY},
     rag_k=${RAG_K_EVAL},
     output_dir='${EXP_RUN_DIR}',
+    backbone='${BACKBONE}',
 )
 sorted_results = sort_results_by_prompt(results)
 n_unique = len(get_unique_prompts(results))
 
 print(f'Unique prompts: {n_unique}')
-print_metrics(sorted_results, CLASS_NAMES)
+print_metrics(sorted_results, _CLASS_NAMES)
 
 # Write CSV row to temp file (avoids stdout capture issues)
 pass_val  = pass_acc(sorted_results)
 maj_val   = majority_acc(sorted_results)
 acc_val   = acc(sorted_results)
-clean_val = clean_acc(sorted_results, class_names=CLASS_NAMES)
+clean_val = clean_acc(sorted_results, class_names=_CLASS_NAMES)
 
 def fmt(t):
     return '\"' + str(t) + '\"'
