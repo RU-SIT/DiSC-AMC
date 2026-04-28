@@ -1,6 +1,6 @@
 # DiSC-AMC
 
-Implementation code for the paper [DiSC-AMC: Token- and Parameter-Efficient Discretized Statistics In-Context Automatic Modulation Classification](https://arxiv.org/abs/2510.00316) — a framework for Automatic Modulation Classification (AMC) using Discrete Large Language Models (LLMs) and Vision Transformers.
+Implementation code for the paper [Large Language Models Can Perform Automatic Modulation Classification via Discretized Self-supervised Candidate Retrieval](https://arxiv.org/abs/2510.00316) — a framework for Automatic Modulation Classification (AMC) using Discrete Large Language Models (LLMs) and Vision Transformers.
 
 ---
 
