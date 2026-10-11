@@ -128,6 +128,27 @@ SOURCES: Dict[str, PredictionSource] = {
         converted_json="ntop{topk}_faiss_filled_denomae_ft_predictions.json",
         pkl_tag="faiss_filled_denomae_ft",
     ),
+    "faiss_filled_metatask": PredictionSource(
+        key="faiss_filled_metatask",
+        label="FAISS kNN voting (padded) — Meta-Task-regularized DenoMAE2 encoder (frozen F)",
+        raw_json="top{topk}_faiss_filled_metatask_predictions.json",
+        converted_json="ntop{topk}_faiss_filled_metatask_predictions.json",
+        pkl_tag="faiss_filled_metatask",
+    ),
+    "faiss_filled_vanilla_unfrozen": PredictionSource(
+        key="faiss_filled_vanilla_unfrozen",
+        label="FAISS kNN voting (padded) — DenoMAE2 encoder, real unfrozen finetune, no Meta-Task",
+        raw_json="top{topk}_faiss_filled_vanilla_unfrozen_predictions.json",
+        converted_json="ntop{topk}_faiss_filled_vanilla_unfrozen_predictions.json",
+        pkl_tag="faiss_filled_vanilla_unfrozen",
+    ),
+    "faiss_filled_metatask_unfrozen": PredictionSource(
+        key="faiss_filled_metatask_unfrozen",
+        label="FAISS kNN voting (padded) — Meta-Task-regularized DenoMAE2 encoder, real unfrozen finetune",
+        raw_json="top{topk}_faiss_filled_metatask_unfrozen_predictions.json",
+        converted_json="ntop{topk}_faiss_filled_metatask_unfrozen_predictions.json",
+        pkl_tag="faiss_filled_metatask_unfrozen",
+    ),
 }
 
 VALID_SOURCES: List[str] = list(SOURCES.keys())

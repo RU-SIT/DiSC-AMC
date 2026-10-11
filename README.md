@@ -23,7 +23,8 @@ Implementation code for the paper [DiSC-AMC: Token- and Parameter-Efficient Disc
     - [Finetuning (`src/finetuning/`)](#finetuning)
 12. [Summary](#summary)
 13. [Key Libraries](#key-libraries)
-14. [License](#license)
+14. [RQ3 Addendum — Meta-Task Backbone Comparison (RadioML)](#rq3-addendum--meta-task-backbone-comparison-radioml)
+15. [License](#license)
 
 ---
 
@@ -1362,6 +1363,40 @@ Here is where each piece now lives:
 - **scikit-learn** — PCA, KBinsDiscretizer, StandardScaler, ML baselines
 - **[FAISS](https://github.com/facebookresearch/faiss)** — Vector similarity search for kNN predictions & RAG-based example retrieval
 - **Plotly** — Interactive visualizations & publication-quality charts
+
+## RQ3 Addendum — Meta-Task Backbone Comparison (RadioML)
+
+Follow-up investigation testing whether [Meta-Task regularization](https://arxiv.org/html/2402.18599)
+(an auxiliary self-supervised loss co-trained alongside a Prototypical
+Network classifier) improves DenoMAE2.0's cross-domain RadioML performance
+— both on its own and once plugged into the full DiSC-AMC pipeline. Full
+writeup, methodology, and the paper/code discrepancy this surfaced:
+[`docs/RQ3_meta_task_results.md`](docs/RQ3_meta_task_results.md). Code:
+[`src/fewshot_meta_task/`](src/fewshot_meta_task/).
+
+**Before** (original published DenoMAE2.0 baseline — frozen encoder, head
+only — Table III "DiSC-AMC (%)" column):
+
+| SNR (dB) | −20 | −10 | 0 | +10 | +20 | avg |
+| -------- | --- | --- | - | --- | --- | --- |
+| DenoMAE2.0 | 17.92 | 19.17 | 25.00 | 24.17 | 21.25 | 21.50 |
+
+**After** (real end-to-end finetuned encoder, matching how DINOv2's own
+baseline was actually built — see the addendum doc for why the original
+"finetuned" DenoMAE2.0 checkpoint was in fact frozen, contradicting the
+paper's own methodology text):
+
+| SNR (dB) | −20 | −10 | 0 | +10 | +20 | avg |
+| -------- | --- | --- | - | --- | --- | --- |
+| DenoMAE2.0, vanilla | 23.33 | 25.00 | 22.50 | 23.33 | 20.83 | 23.00 |
+| DenoMAE2.0 + Meta-Task | 20.42 | 23.75 | 25.42 | 20.83 | 24.17 | 22.92 |
+
+Net finding: real end-to-end finetuning (not Meta-Task) is what actually
+closes most of the gap — DenoMAE2.0's DiSC-AMC average rises from 21.50% to
+23.00% from that alone. Meta-Task regularization on top of it is a wash on
+average (22.92%), winning at some SNRs and losing at others. See the
+addendum doc for the full 3-stage methodology (episodic few-shot, trained
+head, full pipeline) and the exact paper-text-vs-code discrepancy found.
 
 ## License
 
