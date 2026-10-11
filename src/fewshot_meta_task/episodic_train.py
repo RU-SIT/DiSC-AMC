@@ -6,9 +6,15 @@
                      batch, as the Meta-Task-inspired auxiliary regularizer.
 
 Both modes see identical episodes (same seed, same sampler) and the same
-optimizer/schedule -- the only difference is the extra loss term in C, so
-the comparison isolates what the auxiliary regularizer buys over plain
-episodic training.
+main-task optimizer/LR -- the only difference is condition C's extra
+backward/step through a *separate* optimizer for the auxiliary loss, at
+its own (much lower) learning rate. This matches the original Meta-Task
+reference implementation's own pattern (a dedicated low-LR optimizer for
+the auxiliary autoencoder, not a loss-weight scalar on a combined loss
+through one shared optimizer) -- combining the two losses into one before
+backprop under AdamW is a weaker, less controllable knob than it looks,
+since Adam's per-parameter gradient normalization largely absorbs constant
+scalar multipliers on a loss term.
 
 Usage:
     python -m src.fewshot_meta_task.episodic_train \
@@ -52,10 +58,14 @@ def main():
     parser.add_argument("--num_episodes", type=int, default=2000)
     parser.add_argument("--shot", type=int, default=5)
     parser.add_argument("--query", type=int, default=5)
-    parser.add_argument("--lr", type=float, default=1e-5)
+    parser.add_argument("--lr", type=float, default=1e-5,
+                         help="main (prototype classification) task learning rate")
+    parser.add_argument("--aux_lr", type=float, default=1e-6,
+                         help="auxiliary (reconstruction) task learning rate -- separate "
+                              "optimizer, separate backward/step call. Reference "
+                              "implementation default is 1e-6, ~2 orders of magnitude "
+                              "below a typical main-task lr of 1e-4.")
     parser.add_argument("--weight_decay", type=float, default=0.01)
-    parser.add_argument("--aux_weight", type=float, default=1.0,
-                         help="lambda weighting the auxiliary loss in meta_task mode")
     parser.add_argument("--mask_ratio", type=float, default=0.75,
                          help="mask ratio for the auxiliary masked-reconstruction loss")
     parser.add_argument("--seed", type=int, default=0)
@@ -86,7 +96,12 @@ def main():
         load_pretrained_encoder_weights(encoder, args.init_weights, device)
     encoder.train()
 
-    optimizer = torch.optim.AdamW(encoder.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    main_optimizer = torch.optim.AdamW(encoder.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    aux_optimizer = None
+    if args.mode == "meta_task":
+        aux_optimizer = torch.optim.AdamW(encoder.parameters(), lr=args.aux_lr, weight_decay=args.weight_decay)
+
+    autocast_kwargs = dict(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda")
 
     t0 = time.time()
     for step in range(1, args.num_episodes + 1):
@@ -94,27 +109,33 @@ def main():
             n_way, args.shot, args.query, device=device
         )
 
-        with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
-            support_feats = encode_mean_pool(encoder, support_set, mask_ratio=0.0)
-            query_feats = encode_mean_pool(encoder, query_set, mask_ratio=0.0)
-            logits = prototype_logits(support_feats, support_labels, query_feats, n_way)
-            proto_loss = F.cross_entropy(logits, query_labels)
-
-            loss = proto_loss
-            rec_loss_val = 0.0
-            if args.mode == "meta_task":
-                # Auxiliary reconstruction loss on the support set only (not
+        # Auxiliary step first (separate optimizer, separate backward/step,
+        # own low LR) -- matches the reference implementation's order:
+        # the encoder gets a self-supervised update before the episode's
+        # classification loss is computed and applied.
+        rec_loss_val = 0.0
+        if args.mode == "meta_task":
+            with torch.autocast(**autocast_kwargs):
+                # Reconstruction loss on the support set only (not
                 # support+query) -- halves the extra memory this mode needs
                 # over the control condition, which matters at 24-way on a
                 # single GPU. Still a legitimate self-supervised regularizer
                 # on in-distribution episode data.
                 rec_loss = reconstruction_loss(encoder, support_set, support_set, mask_ratio=args.mask_ratio)
-                loss = loss + args.aux_weight * rec_loss
-                rec_loss_val = rec_loss.item()
+            aux_optimizer.zero_grad()
+            rec_loss.backward()
+            aux_optimizer.step()
+            rec_loss_val = rec_loss.item()
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        with torch.autocast(**autocast_kwargs):
+            support_feats = encode_mean_pool(encoder, support_set, mask_ratio=0.0)
+            query_feats = encode_mean_pool(encoder, query_set, mask_ratio=0.0)
+            logits = prototype_logits(support_feats, support_labels, query_feats, n_way)
+            proto_loss = F.cross_entropy(logits, query_labels)
+
+        main_optimizer.zero_grad()
+        proto_loss.backward()
+        main_optimizer.step()
 
         if step % args.log_every == 0 or step == args.num_episodes:
             acc = accuracy(logits, query_labels)

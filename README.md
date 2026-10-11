@@ -1384,19 +1384,23 @@ only — Table III "DiSC-AMC (%)" column):
 **After** (real end-to-end finetuned encoder, matching how DINOv2's own
 baseline was actually built — see the addendum doc for why the original
 "finetuned" DenoMAE2.0 checkpoint was in fact frozen, contradicting the
-paper's own methodology text):
+paper's own methodology text; Meta-Task row uses the corrected
+auxiliary-loss mechanism — see the addendum doc's "Correction 2"):
 
 | SNR (dB) | −20 | −10 | 0 | +10 | +20 | avg |
 | -------- | --- | --- | - | --- | --- | --- |
 | DenoMAE2.0, vanilla | 23.33 | 25.00 | 22.50 | 23.33 | 20.83 | 23.00 |
-| DenoMAE2.0 + Meta-Task | 20.42 | 23.75 | 25.42 | 20.83 | 24.17 | 22.92 |
+| DenoMAE2.0 + Meta-Task | 20.42 | 25.00 | 20.83 | 25.00 | 19.58 | 22.17 |
 
 Net finding: real end-to-end finetuning (not Meta-Task) is what actually
 closes most of the gap — DenoMAE2.0's DiSC-AMC average rises from 21.50% to
-23.00% from that alone. Meta-Task regularization on top of it is a wash on
-average (22.92%), winning at some SNRs and losing at others. See the
-addendum doc for the full 3-stage methodology (episodic few-shot, trained
-head, full pipeline) and the exact paper-text-vs-code discrepancy found.
+23.00% from that alone. Meta-Task regularization on top of it is a wash
+(22.17% average), winning at some SNRs and losing at others, and this
+holds up even after fixing a methodological flaw in how the auxiliary loss
+was weighted (an earlier, flawed version scored 22.92% — fixing it made the
+null result *more* robust, not less). See the addendum doc for the full
+methodology (episodic few-shot, trained head, full pipeline, two rounds of
+correction) and the exact paper-text-vs-code discrepancy found.
 
 ## License
 

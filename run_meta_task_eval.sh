@@ -42,10 +42,17 @@ TRAIN_N_WAY=10   # reduced from the full 24 RadioML classes: at 24-way, a
                  # 24-way target task (no_grad, much lighter).
 SHOT=5
 QUERY=5
-LR=1e-4   # 1e-5 left proto_loss flat (~2.0-2.3) for 2000 steps and left
-          # both conditions near chance even in-distribution -- raised 10x
-          # to actually move a ViT encoder's weights within this budget.
-AUX_WEIGHT=1.0
+LR=1e-4    # main (prototype) task LR. 1e-5 left proto_loss flat (~2.0-2.3)
+           # for 2000 steps and left both conditions near chance even
+           # in-distribution -- raised 10x to actually move a ViT
+           # encoder's weights within this budget.
+AUX_LR=1e-6   # auxiliary (reconstruction) task LR -- separate optimizer,
+              # ~2 orders of magnitude below LR, matching the reference
+              # Meta-Task implementation's own default. Not a loss-weight
+              # scalar on a combined loss: AdamW's per-parameter gradient
+              # normalization makes a scalar multiplier on one loss term a
+              # much weaker, less controllable knob than a genuinely
+              # separate optimizer/LR for that term.
 
 mkdir -p "$OUT_DIR"
 
@@ -67,7 +74,7 @@ python -m src.fewshot_meta_task.episodic_train \
     --output_path "$OUT_DIR/encoder_meta_task.pth" \
     --num_episodes "$NUM_EPISODES" \
     --n_way "$TRAIN_N_WAY" \
-    --shot "$SHOT" --query "$QUERY" --lr "$LR" --aux_weight "$AUX_WEIGHT"
+    --shot "$SHOT" --query "$QUERY" --lr "$LR" --aux_lr "$AUX_LR"
 
 log_step "Held-out SNR few-shot evaluation (1-/5-/10-shot, paired episodes, full 24-way)"
 python -m src.fewshot_meta_task.fewshot_eval \

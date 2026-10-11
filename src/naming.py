@@ -149,6 +149,13 @@ SOURCES: Dict[str, PredictionSource] = {
         converted_json="ntop{topk}_faiss_filled_metatask_unfrozen_predictions.json",
         pkl_tag="faiss_filled_metatask_unfrozen",
     ),
+    "faiss_filled_metatask_v3_unfrozen": PredictionSource(
+        key="faiss_filled_metatask_v3_unfrozen",
+        label="FAISS kNN voting (padded) — Meta-Task (corrected separate-optimizer aux loss) DenoMAE2 encoder, real unfrozen finetune",
+        raw_json="top{topk}_faiss_filled_metatask_v3_unfrozen_predictions.json",
+        converted_json="ntop{topk}_faiss_filled_metatask_v3_unfrozen_predictions.json",
+        pkl_tag="faiss_filled_metatask_v3_unfrozen",
+    ),
 }
 
 VALID_SOURCES: List[str] = list(SOURCES.keys())
